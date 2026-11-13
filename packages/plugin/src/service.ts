@@ -530,7 +530,7 @@ export class HostPluginRuntime {
     }
     if (this.localGateway?.supportsCarrier && this.terminalEnabled) capabilities.push('harness.terminal.v1')
     if (this.fileViewerHost?.() !== undefined) capabilities.push('fileviewer.read.v1')
-    if (this.pluginRoutes?.() !== undefined) capabilities.push('plugin.route.v1')
+    if (this.pluginRoutes?.() !== undefined) capabilities.push('plugin.route.v1', 'plugin.input-prediction.v1')
     if (this.codex.isAvailable()) capabilities.push('codex.appserver.v1', 'codex.appserver.transfer.v1')
     // Protocol support is stable during background warmup; workspaceTypes reports readiness.
     if (this.acp.enabledBackends().length > 0) {

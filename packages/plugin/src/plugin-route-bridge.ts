@@ -5,7 +5,7 @@ import type { SafeLogger } from './logging.js'
 import { RpcError } from './safe-error.js'
 
 /** Local plugin web routes forwardable over the authenticated channel (POST only). */
-export const PLUGIN_ROUTE_ALLOWLIST = ['api/bot'] as const
+export const PLUGIN_ROUTE_ALLOWLIST = ['api/bot', 'api/dsh-input-prediction'] as const
 
 /** Reviewed DS Bot operations; new upstream operations stay local by default. */
 export const BOT_REMOTE_OPERATIONS = [
@@ -32,17 +32,27 @@ export type PluginRouteDispatcher = (
   signal: AbortSignal,
 ) => Promise<{ status: number; json: unknown }>
 
-const callSchema = z.object({
-  route: z.enum(PLUGIN_ROUTE_ALLOWLIST),
-  body: z.object({
-    endpoint: z.enum(BOT_REMOTE_OPERATIONS),
-    payload: z.record(z.string(), z.unknown()).nullable().optional(),
-  }).strict().superRefine((body, ctx) => {
-    if (body.endpoint === 'approval-answer' && body.payload?.choice !== 'allow' && body.payload?.choice !== 'reject') {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Only one-time approval or rejection is supported.' })
-    }
-  }),
-}).strict()
+const callSchema = z.discriminatedUnion('route', [
+  z.object({
+    route: z.literal('api/bot'),
+    body: z.object({
+      endpoint: z.enum(BOT_REMOTE_OPERATIONS),
+      payload: z.record(z.string(), z.unknown()).nullable().optional(),
+    }).strict().superRefine((body, ctx) => {
+      if (body.endpoint === 'approval-answer' && body.payload?.choice !== 'allow' && body.payload?.choice !== 'reject') {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Only one-time approval or rejection is supported.' })
+      }
+    }),
+  }).strict(),
+  z.object({
+    route: z.literal('api/dsh-input-prediction'),
+    body: z.object({
+      sessionId: z.string().min(1).max(256).refine(value => value.trim() === value && value.trim().length > 0)
+        // Same backend namespaces as workspace-upload-authority; prediction is Harness-only.
+        .refine(value => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value)),
+    }).strict(),
+  }).strict(),
+])
 
 /** Local plugin route call timeout, mirroring the Harness API bridge budget. */
 const PLUGIN_ROUTE_TIMEOUT_MS = 30_000
@@ -61,7 +71,7 @@ export class PluginRouteBridge {
   async call(input: unknown): Promise<PluginRouteCallResult> {
     let params: PluginRouteCallParams
     try {
-      params = callSchema.parse(input) as PluginRouteCallParams
+      params = callSchema.parse(input)
     } catch (error) {
       if (error instanceof z.ZodError) {
         throw new RpcError('INVALID_MESSAGE', 'The plugin route call is invalid for the remote channel.')

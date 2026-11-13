@@ -601,9 +601,12 @@ export interface TransportStats {
 }
 
 /** Local plugin web route call tunneled inside the authenticated business channel. */
-export interface PluginRouteCallParams {
-  route: string
+export type PluginRouteCallParams = {
+  route: 'api/bot'
   body: { endpoint: string; payload?: Record<string, unknown> | null }
+} | {
+  route: 'api/dsh-input-prediction'
+  body: { sessionId: string }
 }
 
 export interface PluginRouteCallResult {

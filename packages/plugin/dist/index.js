@@ -79117,7 +79117,7 @@ var LoopbackPreview = class {
 };
 
 // packages/plugin/src/plugin-route-bridge.ts
-var PLUGIN_ROUTE_ALLOWLIST = ["api/bot"];
+var PLUGIN_ROUTE_ALLOWLIST = ["api/bot", "api/dsh-input-prediction"];
 var BOT_REMOTE_OPERATIONS = [
   "state",
   "models",
@@ -79189,17 +79189,25 @@ var BOT_REMOTE_OPERATIONS = [
 function isAllowedPluginRoute(route) {
   return PLUGIN_ROUTE_ALLOWLIST.some((allowed) => allowed === route);
 }
-var callSchema = external_exports.object({
-  route: external_exports.enum(PLUGIN_ROUTE_ALLOWLIST),
-  body: external_exports.object({
-    endpoint: external_exports.enum(BOT_REMOTE_OPERATIONS),
-    payload: external_exports.record(external_exports.string(), external_exports.unknown()).nullable().optional()
-  }).strict().superRefine((body, ctx) => {
-    if (body.endpoint === "approval-answer" && body.payload?.choice !== "allow" && body.payload?.choice !== "reject") {
-      ctx.addIssue({ code: external_exports.ZodIssueCode.custom, message: "Only one-time approval or rejection is supported." });
-    }
-  })
-}).strict();
+var callSchema = external_exports.discriminatedUnion("route", [
+  external_exports.object({
+    route: external_exports.literal("api/bot"),
+    body: external_exports.object({
+      endpoint: external_exports.enum(BOT_REMOTE_OPERATIONS),
+      payload: external_exports.record(external_exports.string(), external_exports.unknown()).nullable().optional()
+    }).strict().superRefine((body, ctx) => {
+      if (body.endpoint === "approval-answer" && body.payload?.choice !== "allow" && body.payload?.choice !== "reject") {
+        ctx.addIssue({ code: external_exports.ZodIssueCode.custom, message: "Only one-time approval or rejection is supported." });
+      }
+    })
+  }).strict(),
+  external_exports.object({
+    route: external_exports.literal("api/dsh-input-prediction"),
+    body: external_exports.object({
+      sessionId: external_exports.string().min(1).max(256).refine((value) => value.trim() === value && value.trim().length > 0).refine((value) => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value))
+    }).strict()
+  }).strict()
+]);
 var PLUGIN_ROUTE_TIMEOUT_MS = 3e4;
 var PluginRouteBridge = class {
   constructor(dispatch, logger2) {
@@ -102514,7 +102522,7 @@ var HostPluginRuntime = class {
     }
     if (this.localGateway?.supportsCarrier && this.terminalEnabled) capabilities.push("harness.terminal.v1");
     if (this.fileViewerHost?.() !== void 0) capabilities.push("fileviewer.read.v1");
-    if (this.pluginRoutes?.() !== void 0) capabilities.push("plugin.route.v1");
+    if (this.pluginRoutes?.() !== void 0) capabilities.push("plugin.route.v1", "plugin.input-prediction.v1");
     if (this.codex.isAvailable()) capabilities.push("codex.appserver.v1", "codex.appserver.transfer.v1");
     if (this.acp.enabledBackends().length > 0) {
       capabilities.push("agent.acp.v1", "agent.acp.transfer.v1", "agent.acp.workspace-files.v1");

@@ -821,11 +821,12 @@ Plugin Host 的 Harness 业务路由只接受 capability 对应的官方 Typert 
 ### 16.4 plugin.route.call
 
 `plugin.route.call`（capability `plugin.route.v1`）把 Host 本机其他 DSH 插件的 HTTP 路由
-（当前仅 ds-bot 的 `POST api/bot`）通过认证业务通道转发给远程 Client。Host 与 Client
-控制入口只接受 `route` 精确等于编译期固定白名单中的 `api/bot`；其他插件路径、官方
+（ds-bot 的 `POST api/bot` 与输入预测的 `POST api/dsh-input-prediction`）通过认证业务通道
+转发给远程 Client。Host 的 `plugin.route.call` 只接受 `route` 精确等于这两个编译期固定路径；其他插件路径、官方
 Harness RPC 路径、路径规范化变体及 query 均以 `INVALID_MESSAGE` 拒绝，不进入本机
 Connection handler。不得通过该入口绕过 Harness Remote allowlist、Remote 设置限制或
-终端归属与输入权校验。`body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON
+终端归属与输入权校验。两条路由各自严格校验 body，不开放自选 method、GET、任意 fetch 或通用代理。
+`api/bot` 的 `body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON
 对象或 `null`（数组与原始值拒绝）；额外顶层字段拒绝。Host 在进入任何本机 carrier 前
 按 `endpoint` 执行以下编译期固定操作白名单，新增上游操作默认拒绝：
 
@@ -898,6 +899,54 @@ catalog、Host 未注册 `api/bot`（404）、Host carrier 不可用（503）及
 未就绪分别返回固定错误码与安全说明，不以统一 HTTP 502 隐藏原因。取消仍拒绝 fetch。
 Host 的 Bot/Agent 界面模式仅为页面本地偏好，不影响 `api/bot` 的注册；Host 需在连接的
 同一 DSH 实例/profile 中启用 `ds-bot`。
+
+#### Harness 输入预测只读状态
+
+Host 在提供本机插件路由 dispatcher 时同时宣告 `plugin.route.v1` 与
+`plugin.input-prediction.v1`。后者表示已实现此精确路由与请求体的转发协议，**不保证安装、
+启用或配置了输入预测插件**。Client 仅在当前后端为 Harness 且 capability 包含
+`plugin.input-prediction.v1` 时调用；缺少 capability 时保持无建议，不推测版本或回退其他 API。
+
+```json
+{
+  "method": "plugin.route.call",
+  "params": {
+    "route": "api/dsh-input-prediction",
+    "body": { "sessionId": "native-harness-session-id" }
+  }
+}
+```
+
+Host 只将该请求派发为 `POST /api/dsh-input-prediction`，body 必须仅含 `sessionId`：
+字符串长度 1–256、trim 后非空且不得含首尾空白。不接受 `backend`、`endpoint`、生成参数、
+额外字段、数组、null 或原始值；外层也只接受 `route` 与 `body`。沿用 Remote 现有后端
+命名空间划分，`codex:`、`acp:`、`cursor:`、`pi:`、`opencode:`、`claude:`、`hermes:`
+开头的虚拟会话 ID 在派发前返回 `INVALID_MESSAGE`，不跨后端查找。原生会话是否存在及状态
+由预测插件查询；Remote 不生成预测、不触发重试、不发送会话消息、不采用预测。
+
+成功结果沿用 HTTP envelope：
+
+```json
+{
+  "status": 200,
+  "json": {
+    "status": "ready",
+    "completionSeq": 42,
+    "prediction": "继续检查这处实现",
+    "reason": "可选的状态原因"
+  }
+}
+```
+
+内层 `status` 为 `none | pending | ready`；`completionSeq?: number` 标识产生状态的完成事件，
+`prediction?: string` 为建议文字，`reason?: string` 为状态原因。Client 只展示有效的 ready
+建议；`ready` 仍可携带空 `prediction`（例如 `reason: "model_declined"`），此时无建议。
+none/pending、插件缺失的 HTTP 404、carrier 不可用的 503 及查询错误均无可采用建议。
+POST 是只读快照查询，不会触发预测或消耗/删除建议；重复读取保留同一完成事件标识。
+返回沿用桥接的 30 秒预算和请求/响应大小上限，HTTP 状态与 JSON 原样保留。
+
+本轮仅增加原生客户端 RPC 接入，Desktop/Web 的 fetch 拦截仍只处理 `api/bot`，不自动接管
+输入预测请求。客户端的轮询、会话切换及草稿采用由各端实现；采用操作只填入草稿，发送仍需用户触发。
 
 ## 17. Capability
 
