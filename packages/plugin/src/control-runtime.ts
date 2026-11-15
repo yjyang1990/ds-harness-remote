@@ -816,6 +816,7 @@ function editableConfig(config: ResolvedConfig): Config {
     sidebar: config.sidebar,
     hostControl: config.hostControl ?? { enabled: true },
     loopback: config.loopback,
+    ...(config.externalImageRoot === undefined ? {} : { externalImageRoot: config.externalImageRoot }),
     forceRelay: config.forceRelay,
     logLevel: config.logLevel,
     reconnect: config.reconnect.enabled

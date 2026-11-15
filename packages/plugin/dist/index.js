@@ -3227,7 +3227,7 @@ var require_stream = __commonJS({
       };
       duplex._final = function(callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open7() {
+          ws.once("open", function open8() {
             duplex._final(callback);
           });
           return;
@@ -3248,7 +3248,7 @@ var require_stream = __commonJS({
       };
       duplex._write = function(chunk, encoding, callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open7() {
+          ws.once("open", function open8() {
             duplex._write(chunk, encoding, callback);
           });
           return;
@@ -41443,11 +41443,11 @@ var require_dijkstra = __commonJS({
         var predecessors = {};
         var costs = {};
         costs[s] = 0;
-        var open7 = dijkstra.PriorityQueue.make();
-        open7.push(s, 0);
+        var open8 = dijkstra.PriorityQueue.make();
+        open8.push(s, 0);
         var closest, u, v, cost_of_s_to_u, adjacent_nodes, cost_of_e, cost_of_s_to_u_plus_cost_of_e, cost_of_s_to_v, first_visit;
-        while (!open7.empty()) {
-          closest = open7.pop();
+        while (!open8.empty()) {
+          closest = open8.pop();
           u = closest.value;
           cost_of_s_to_u = closest.cost;
           adjacent_nodes = graph[u] || {};
@@ -41459,7 +41459,7 @@ var require_dijkstra = __commonJS({
               first_visit = typeof costs[v] === "undefined";
               if (first_visit || cost_of_s_to_v > cost_of_s_to_u_plus_cost_of_e) {
                 costs[v] = cost_of_s_to_u_plus_cost_of_e;
-                open7.push(v, cost_of_s_to_u_plus_cost_of_e);
+                open8.push(v, cost_of_s_to_u_plus_cost_of_e);
                 predecessors[v] = u;
               }
             }
@@ -79278,7 +79278,7 @@ var LoopbackPreview = class {
 };
 
 // packages/plugin/src/plugin-route-bridge.ts
-var PLUGIN_ROUTE_ALLOWLIST = ["api/bot", "api/session/uploadFileBinary"];
+var PLUGIN_ROUTE_ALLOWLIST = ["api/bot", "api/session/uploadFileBinary", "api/dsh-input-prediction"];
 var BOT_REMOTE_OPERATIONS = [
   "abandon-work",
   "add-agent",
@@ -79449,13 +79449,21 @@ var BOT_REMOTE_OPERATIONS = [
 function isAllowedPluginRoute(route) {
   return PLUGIN_ROUTE_ALLOWLIST.some((allowed) => allowed === route);
 }
-var callSchema = external_exports.object({
-  route: external_exports.enum(PLUGIN_ROUTE_ALLOWLIST),
-  body: external_exports.object({
-    endpoint: external_exports.enum(BOT_REMOTE_OPERATIONS),
-    payload: external_exports.record(external_exports.string(), external_exports.unknown()).nullable().optional()
+var callSchema = external_exports.discriminatedUnion("route", [
+  external_exports.object({
+    route: external_exports.literal("api/bot"),
+    body: external_exports.object({
+      endpoint: external_exports.enum(BOT_REMOTE_OPERATIONS),
+      payload: external_exports.record(external_exports.string(), external_exports.unknown()).nullable().optional()
+    }).strict()
+  }).strict(),
+  external_exports.object({
+    route: external_exports.literal("api/dsh-input-prediction"),
+    body: external_exports.object({
+      sessionId: external_exports.string().min(1).max(256).refine((value) => value.trim() === value && value.trim().length > 0).refine((value) => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value))
+    }).strict()
   }).strict()
-}).strict();
+]);
 var uploadFields = {
   sessionId: external_exports.string().min(1).max(512),
   name: external_exports.string().max(512).optional(),
@@ -84438,6 +84446,7 @@ async function readPrivateJson(path) {
 
 // packages/plugin/src/config.ts
 import { hostname as hostname3 } from "node:os";
+import { isAbsolute as isAbsolute3 } from "node:path";
 
 // node_modules/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
@@ -85318,6 +85327,7 @@ var entryConfigSchema = Schema.object({
   sidebar: Schema.object({ entry: Schema.union(["standard", "compact"]) }),
   hostControl: Schema.object({ enabled: Schema.boolean() }),
   loopback: Schema.object({ ports: Schema.array(Schema.number()) }),
+  externalImageRoot: Schema.object({ sessionId: Schema.string(), path: Schema.string() }),
   forceRelay: Schema.boolean(),
   rotatePinnedPeerKey: Schema.boolean(),
   logLevel: Schema.union(["debug", "info", "warn", "error"]),
@@ -85363,6 +85373,10 @@ var configSchema = external_exports.object({
   sidebar: external_exports.object({ entry: external_exports.enum(["standard", "compact"]).optional() }).strict().optional(),
   hostControl: external_exports.object({ enabled: external_exports.boolean().optional() }).strict().optional(),
   loopback: external_exports.object({ ports: external_exports.array(external_exports.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
+  externalImageRoot: external_exports.union([
+    external_exports.object({ sessionId: external_exports.string().min(1).max(512), path: external_exports.string().min(1).max(4096).refine(isAbsolute3, "Image root must be absolute") }).strict(),
+    external_exports.object({}).strict().transform(() => void 0)
+  ]).optional(),
   forceRelay: external_exports.boolean().optional(),
   rotatePinnedPeerKey: external_exports.boolean().optional(),
   logLevel: external_exports.enum(["debug", "info", "warn", "error"]).optional(),
@@ -85407,6 +85421,7 @@ function resolveConfig(input4 = {}, env = process.env) {
     remoteTools: { enabled: parsed.remoteTools?.enabled ?? true },
     sidebar: { entry: parsed.sidebar?.entry === "compact" ? "compact" : "standard" },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
+    ...parsed.externalImageRoot === void 0 ? {} : { externalImageRoot: parsed.externalImageRoot },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
     logLevel: parsed.logLevel ?? "info",
@@ -86468,7 +86483,7 @@ var TypertGatewaySwitch = class {
         return { ok: false, error: this.failure(error62) };
       }
     }) : (endpoint, payload, signal) => this.localDispatch(endpoint, payload, signal, peer);
-    const open7 = this.localOpen === void 0 ? (async (endpoint, payload, signal) => {
+    const open8 = this.localOpen === void 0 ? (async (endpoint, payload, signal) => {
       if (this.localStream === void 0) throw new Error("The local Harness Gateway does not support Remote streams.");
       return this.localStream({ ...requestFromCarrier(endpoint, payload, signal), ...peer === void 0 ? {} : { peer } });
     }) : (endpoint, payload, signal, uplink) => this.localOpen(endpoint, payload, signal, uplink, peer);
@@ -86477,7 +86492,7 @@ var TypertGatewaySwitch = class {
       peer,
       ...this.localStream === void 0 ? {} : { stream: (request) => this.localStream({ ...request, ...peer === void 0 ? {} : { peer } }) },
       dispatch,
-      open: open7,
+      open: open8,
       failure: (error62) => this.failure(error62),
       supportsCarrier: this.localDispatch !== void 0 && this.localOpen !== void 0
     };
@@ -86504,12 +86519,12 @@ var TypertGatewaySwitch = class {
       };
     }
     if (this.originalOpen !== void 0) {
-      const open7 = this.originalOpen;
-      const rc1 = usesRc1Arity(open7);
+      const open8 = this.originalOpen;
+      const rc1 = usesRc1Arity(open8);
       this.runtime.openWireStream = (...callArgs) => {
         const endpoint = callArgs[0];
         if (this.remoteTarget === void 0 || isLocalOnlyEndpoint(endpoint)) {
-          return rc1 ? Reflect.apply(open7, this.runtime, callArgs) : open7.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
+          return rc1 ? Reflect.apply(open8, this.runtime, callArgs) : open8.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
         }
         const signal = rc1 ? callArgs[4] : callArgs[2];
         return this.openRemote(endpoint, callArgs[1], signal ?? new AbortController().signal, rc1 ? callArgs[2] : void 0);
@@ -86593,8 +86608,8 @@ function workspaceConnectionResult(endpoint, result) {
     ]
   };
 }
-function usesRc1Arity(open7) {
-  return open7.length >= 5;
+function usesRc1Arity(open8) {
+  return open8.length >= 5;
 }
 function endedUplink() {
   return {
@@ -86613,9 +86628,9 @@ function linkControl(signal) {
   return control;
 }
 function createLocalOpen(gateway, runtime) {
-  const open7 = runtime.openWireStream;
-  if (open7 !== void 0) {
-    return usesRc1Arity(open7) ? (endpoint, payload, signal, uplink, peer) => peer === void 0 ? Promise.reject(missingPeerError(endpoint)) : open7.call(runtime, endpoint, payload, uplink ?? endedUplink(), peer, signal, linkControl(signal)) : (endpoint, payload, signal) => open7.call(runtime, endpoint, payload, signal);
+  const open8 = runtime.openWireStream;
+  if (open8 !== void 0) {
+    return usesRc1Arity(open8) ? (endpoint, payload, signal, uplink, peer) => peer === void 0 ? Promise.reject(missingPeerError(endpoint)) : open8.call(runtime, endpoint, payload, uplink ?? endedUplink(), peer, signal, linkControl(signal)) : (endpoint, payload, signal) => open8.call(runtime, endpoint, payload, signal);
   }
   const wire = gateway.wireStream;
   if (wire === void 0) return void 0;
@@ -89857,7 +89872,7 @@ import { randomUUID as randomUUID13 } from "node:crypto";
 import { accessSync, constants as constants2, existsSync as existsSync2, readdirSync as readdirSync2, readFileSync, statSync as statSync2 } from "node:fs";
 import { readdir as readdir3, realpath, stat as stat3 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import { basename as basename5, isAbsolute as isAbsolute3, join as join6, relative, resolve as resolve3 } from "node:path";
+import { basename as basename5, isAbsolute as isAbsolute4, join as join6, relative, resolve as resolve3 } from "node:path";
 
 // packages/plugin/src/codex/app-server.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -91605,7 +91620,7 @@ var CodexRemoteDomain = class {
           ...cursor3 === void 0 ? {} : { cursor: cursor3 }
         }));
         for (const project2 of result.data) {
-          const projectRoots = project2.roots.map((root2) => root2.path).filter((path) => isAbsolute3(path));
+          const projectRoots = project2.roots.map((root2) => root2.path).filter((path) => isAbsolute4(path));
           if (projectRoots.length === 0) continue;
           projectIds.add(project2.id);
           roots.push(...projectRoots);
@@ -91634,7 +91649,7 @@ var CodexRemoteDomain = class {
       }
     }
     for (const workspace2 of deriveCodexCwdWorkspaces(threads)) {
-      if (isAbsolute3(workspace2.path)) roots.push(workspace2.path);
+      if (isAbsolute4(workspace2.path)) roots.push(workspace2.path);
     }
     return { projectIds, roots };
   }
@@ -91658,7 +91673,7 @@ var CodexRemoteDomain = class {
     return void 0;
   }
   async requireCodexWorkspacePath(path) {
-    if (!isAbsolute3(path)) {
+    if (!isAbsolute4(path)) {
       throw new RpcError("CODEX_PATH_NOT_ALLOWED", "The CodeX working directory is not available as a Workspace.");
     }
     const paths = await this.listCodexWorkspacePaths();
@@ -91681,7 +91696,7 @@ var CodexRemoteDomain = class {
     throw new RpcError("CODEX_PATH_NOT_ALLOWED", "The CodeX working directory is not available as a Workspace.");
   }
   async requireNewCodexProjectPath(path) {
-    if (!isAbsolute3(path)) {
+    if (!isAbsolute4(path)) {
       throw new RpcError("CODEX_PATH_NOT_ALLOWED", "The CodeX project directory must be an existing absolute directory.");
     }
     try {
@@ -91729,7 +91744,7 @@ var CodexRemoteDomain = class {
     };
   }
   async resolveCodexDirectory(path) {
-    if (!isAbsolute3(path)) {
+    if (!isAbsolute4(path)) {
       throw new RpcError("CODEX_PATH_NOT_ALLOWED", "The CodeX working directory is not available as a Workspace.");
     }
     const authority = await this.readWorkspaceAuthority();
@@ -91904,7 +91919,7 @@ function sanitizeProject(value) {
   if (!isRecord14(value) || typeof value.id !== "string" || typeof value.name !== "string") return void 0;
   const roots = Array.isArray(value.roots) ? value.roots.flatMap((root2) => {
     const path = isRecord14(root2) && typeof root2.path === "string" && root2.path.length > 0 ? root2.path : void 0;
-    return path === void 0 || !isAbsolute3(path) ? [] : [{ path }];
+    return path === void 0 || !isAbsolute4(path) ? [] : [{ path }];
   }) : [];
   if (roots.length === 0) return void 0;
   return {
@@ -92878,7 +92893,7 @@ var IsolatedAcpClient = class {
 
 // packages/plugin/src/workspace-bridge.ts
 import { realpath as realpath2, lstat as lstat3, readdir as readdir4, open as open4, stat as stat4, watch } from "node:fs/promises";
-import { isAbsolute as isAbsolute5, join as join8, relative as relative2, resolve as resolve4 } from "node:path";
+import { isAbsolute as isAbsolute6, join as join8, relative as relative2, resolve as resolve4 } from "node:path";
 
 // packages/plugin/src/remote-terminal-controller.ts
 var import_headless = __toESM(require_xterm_headless(), 1);
@@ -92889,7 +92904,7 @@ import { spawn as spawn4 } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants as constants3 } from "node:fs";
 import { userInfo } from "node:os";
-import { delimiter as delimiter2, isAbsolute as isAbsolute4, join as join7 } from "node:path";
+import { delimiter as delimiter2, isAbsolute as isAbsolute5, join as join7 } from "node:path";
 import { PassThrough } from "node:stream";
 function profile(path) {
   const name2 = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
@@ -92899,7 +92914,7 @@ function profile(path) {
 async function localExecutable(file2, _env, signal) {
   signal?.throwIfAborted();
   const extensions = process.platform === "win32" && !/\.[^\\/]+$/.test(file2) ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-  const paths = isAbsolute4(file2) ? [file2] : (process.env.PATH ?? "").split(delimiter2).filter(Boolean).map((dir) => join7(dir, file2));
+  const paths = isAbsolute5(file2) ? [file2] : (process.env.PATH ?? "").split(delimiter2).filter(Boolean).map((dir) => join7(dir, file2));
   for (const path of paths) for (const extension2 of extensions) {
     try {
       await access(path + extension2, process.platform === "win32" ? constants3.F_OK : constants3.X_OK);
@@ -93655,15 +93670,15 @@ var WorkspaceBridge = class {
     }
   }
   async safePath(root2, path, directory) {
-    const candidate = isAbsolute5(path) ? resolve4(path) : resolve4(root2, path);
+    const candidate = isAbsolute6(path) ? resolve4(path) : resolve4(root2, path);
     const rel = relative2(root2, candidate);
-    if (rel.startsWith("..") || isAbsolute5(rel)) throw this.scopeError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the CodeX workspace.");
+    if (rel.startsWith("..") || isAbsolute6(rel)) throw this.scopeError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the CodeX workspace.");
     try {
       const info = await lstat3(candidate);
       if (info.isSymbolicLink()) throw new Error();
       const canonical = await realpath2(candidate);
       const canonicalRel = relative2(root2, canonical);
-      if (canonicalRel.startsWith("..") || isAbsolute5(canonicalRel)) throw new Error();
+      if (canonicalRel.startsWith("..") || isAbsolute6(canonicalRel)) throw new Error();
       if (directory && !info.isDirectory()) throw new Error();
       return canonical;
     } catch {
@@ -93827,7 +93842,7 @@ var AcpWorkspaceTools = class {
 import { randomUUID as randomUUID15 } from "node:crypto";
 import { readdir as readdir5, realpath as realpath5, stat as stat5 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
-import { basename as basename7, isAbsolute as isAbsolute7, join as join12, relative as relative4, resolve as resolve6 } from "node:path";
+import { basename as basename7, isAbsolute as isAbsolute8, join as join12, relative as relative4, resolve as resolve6 } from "node:path";
 
 // packages/plugin/src/acp/adapters/claude-process.ts
 import { Buffer as Buffer5 } from "node:buffer";
@@ -95662,7 +95677,7 @@ function isSessionMutation(method) {
 
 // packages/plugin/src/acp/adapters/antigravity/transcript-loader.ts
 import { promises as fs3 } from "node:fs";
-import { isAbsolute as isAbsolute6, join as join11, relative as relative3, resolve as resolve5, sep as sep2 } from "node:path";
+import { isAbsolute as isAbsolute7, join as join11, relative as relative3, resolve as resolve5, sep as sep2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { homedir as homedir5 } from "node:os";
 import { createRequire as createRequire2 } from "node:module";
@@ -95829,7 +95844,7 @@ async function discoverAntigravityWorkspaces(dbPath = join11(homedir5(), ".gemin
             try {
               const p = fileURLToPath2(u);
               const imageRelative = relative3(AGY_IMAGE_ROOT, p);
-              const imageCache = imageRelative === "" || !isAbsolute6(imageRelative) && imageRelative !== ".." && !imageRelative.startsWith(`..${sep2}`);
+              const imageCache = imageRelative === "" || !isAbsolute7(imageRelative) && imageRelative !== ".." && !imageRelative.startsWith(`..${sep2}`);
               if (!imageCache) paths.add(p);
             } catch {
             }
@@ -97531,7 +97546,7 @@ var AcpRemoteGateway = class {
     return canonical;
   }
   async requireExistingDirectory(path) {
-    if (!isAbsolute7(path)) {
+    if (!isAbsolute8(path)) {
       throw new RpcError("CURSOR_PATH_NOT_ALLOWED", "The Cursor working directory must be an absolute path.");
     }
     try {
@@ -97549,7 +97564,7 @@ var AcpRemoteGateway = class {
   async listDirectory(path) {
     const home = homedir6();
     const target3 = path.trim() === "~" || path.trim() === "" ? home : path.startsWith("~/") ? join12(home, path.slice(2)) : path;
-    const canonical = await this.requireExistingDirectory(isAbsolute7(target3) ? target3 : resolve6(target3));
+    const canonical = await this.requireExistingDirectory(isAbsolute8(target3) ? target3 : resolve6(target3));
     const names = await readdir5(canonical);
     const entries = [];
     let truncated = false;
@@ -98713,6 +98728,7 @@ function editableConfig(config2) {
     sidebar: config2.sidebar,
     hostControl: config2.hostControl ?? { enabled: true },
     loopback: config2.loopback,
+    ...config2.externalImageRoot === void 0 ? {} : { externalImageRoot: config2.externalImageRoot },
     forceRelay: config2.forceRelay,
     logLevel: config2.logLevel,
     reconnect: config2.reconnect.enabled ? {
@@ -99495,7 +99511,7 @@ var HostPairing = class {
 import { randomUUID as randomUUID16 } from "node:crypto";
 import { constants as constants6 } from "node:fs";
 import { link as link2, lstat as lstat4, open as open6, realpath as realpath6, stat as stat7, unlink as unlink2 } from "node:fs/promises";
-import { extname, isAbsolute as isAbsolute8, join as join16 } from "node:path";
+import { extname, isAbsolute as isAbsolute9, join as join16 } from "node:path";
 var WORKSPACE_UPLOAD_BYTES = 20 * 1024 * 1024;
 var WORKSPACE_UPLOAD_CHUNK = 64 * 1024;
 var WORKSPACE_UPLOAD_AUTHORITY_TTL_MS = 5e3;
@@ -99576,7 +99592,7 @@ var WorkspaceUploadHost = class {
     if (this.uploads.size >= 2) throw failure4("UPLOAD_LIMIT");
     const sourceRoot = await this.sessionRoot(p.sessionId);
     this.assertLive();
-    if (!sourceRoot || !isAbsolute8(sourceRoot)) throw failure4("UPLOAD_WORKSPACE_UNAVAILABLE");
+    if (!sourceRoot || !isAbsolute9(sourceRoot)) throw failure4("UPLOAD_WORKSPACE_UNAVAILABLE");
     const root2 = await realpath6(sourceRoot);
     const directory = await stat7(root2);
     if (!directory.isDirectory()) throw failure4("UPLOAD_WORKSPACE_UNAVAILABLE");
@@ -101704,16 +101720,16 @@ function closeCode(code) {
 // packages/plugin/src/harness-remote-bridge.ts
 import { randomUUID as randomUUID17 } from "node:crypto";
 import { homedir as homedir10 } from "node:os";
-import { lstat as lstat5, realpath as realpath7, stat as stat9 } from "node:fs/promises";
-import { dirname as dirname8, isAbsolute as isAbsolute10, join as join17, parse as parse4, relative as relative5, resolve as resolve9, sep as sep3 } from "node:path";
+import { lstat as lstat5, open as open7, realpath as realpath7, stat as stat9 } from "node:fs/promises";
+import { dirname as dirname8, extname as extname2, isAbsolute as isAbsolute11, join as join17, parse as parse4, relative as relative5, resolve as resolve9, sep as sep3 } from "node:path";
 
 // packages/plugin/src/remote-directory-browser.ts
 import { mkdir as mkdir5, readdir as readdir6, stat as stat8 } from "node:fs/promises";
 import { homedir as homedir9, platform as platform2 } from "node:os";
-import { basename as basename8, dirname as dirname7, isAbsolute as isAbsolute9, parse as parse3, resolve as resolve8 } from "node:path";
+import { basename as basename8, dirname as dirname7, isAbsolute as isAbsolute10, parse as parse3, resolve as resolve8 } from "node:path";
 var MAX_ENTRIES = 500;
 async function ensureHostWorkspaceDirectory(path) {
-  if (typeof path !== "string" || path.trim() === "" || path.includes("\0") || !isAbsolute9(path) || resolve8(path) === parse3(path).root) {
+  if (typeof path !== "string" || path.trim() === "" || path.includes("\0") || !isAbsolute10(path) || resolve8(path) === parse3(path).root) {
     throw new RpcError("INVALID_MESSAGE", "Workspace path must be an absolute, non-root directory path.");
   }
   await mkdir5(path, { recursive: true });
@@ -101722,7 +101738,7 @@ async function listRemoteDirectory(path, signal) {
   signal?.throwIfAborted();
   const home = resolve8(homedir9());
   const target3 = path === void 0 || path.trim() === "" ? home : resolve8(path);
-  if (!isAbsolute9(target3)) throw new Error("The remote directory path must be absolute.");
+  if (!isAbsolute10(target3)) throw new Error("The remote directory path must be absolute.");
   const rows = await readdir6(target3, { withFileTypes: true });
   const directories = [];
   for (const row of rows) {
@@ -101807,6 +101823,7 @@ var directoryListSchema = external_exports.object({
 var MAX_ACTIVE_STREAMS3 = MAX_ALPHA_STREAMS_PER_CONNECTION;
 var MAX_ACTIVE_TRANSFERS3 = MAX_ACTIVE_TRANSFERS_PER_DIRECTION;
 var INLINE_TRANSFER_RESPONSE_BYTES3 = 2 * 1024 * 1024;
+var EXTERNAL_IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 var HARNESS_REMOTE_ALLOWLIST = [
   "$events",
   "$events/result",
@@ -101954,7 +101971,7 @@ var PUBLIC_SCHEDULE_ERRORS = {
 };
 var allowedEndpoints = new Set(HARNESS_REMOTE_ALLOWLIST);
 var HarnessRemoteBridge = class {
-  constructor(gateway, publish, logger2, harnessVersion, terminal = new TerminalPolicy(() => false, "", /* @__PURE__ */ new Map()), codexWorkspace, resolveWorkspaceRoot, schedule, uploadAttachment) {
+  constructor(gateway, publish, logger2, harnessVersion, terminal = new TerminalPolicy(() => false, "", /* @__PURE__ */ new Map()), codexWorkspace, resolveWorkspaceRoot, schedule, uploadAttachment, externalImageRoot) {
     this.gateway = gateway;
     this.publish = publish;
     this.logger = logger2;
@@ -101964,6 +101981,7 @@ var HarnessRemoteBridge = class {
     this.resolveWorkspaceRoot = resolveWorkspaceRoot;
     this.schedule = schedule;
     this.uploadAttachment = uploadAttachment;
+    this.externalImageRoot = externalImageRoot;
     this.terminalCarrier = usesDuplexTerminal(harnessVersion) ? new TerminalCarrierCompat(gateway) : void 0;
   }
   compactHistoryEnabled = false;
@@ -102456,7 +102474,7 @@ var HarnessRemoteBridge = class {
       if (pathSegments.some((segment) => segment === "..")) {
         throw workspaceFileFailure("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.", "outside-root");
       }
-      safeRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, path, endpoint, sessionWorkspace.cwd);
+      safeRel = await this.resolveExternalImagePath(sessionId, path, endpoint) ?? await this.verifyWorkspacePathContainment(sessionWorkspace.root, path, endpoint, sessionWorkspace.cwd);
     }
     let finalArgs = isRecord22(rootPayload.args) ? { ...rootPayload.args, path: safeRel } : { ...rootPayload, path: safeRel };
     if (isRecord22(finalArgs.options)) {
@@ -102464,7 +102482,12 @@ var HarnessRemoteBridge = class {
       finalArgs.options = restOptions;
     }
     delete finalArgs.baseFile;
-    if (endpoint === "workspaceFiles/readBytes") {
+    const wholeExternalImage = endpoint === "workspaceFiles/readBytes" && isAbsolute11(safeRel) && !isRecord22(finalArgs.range) && !(isRecord22(finalArgs.options) && isRecord22(finalArgs.options.range)) && !Object.hasOwn(finalArgs, "offset") && !Object.hasOwn(finalArgs, "length");
+    if (wholeExternalImage) {
+      if ((await stat9(safeRel)).size > MAX_READ_BYTES2) {
+        throw workspaceFileFailure("WORKSPACE_TOO_LARGE", "The requested workspace file is too large.", "too-large");
+      }
+    } else if (endpoint === "workspaceFiles/readBytes") {
       const range = byteOrLineRange2(finalArgs);
       const offset = typeof range.offset === "number" && Number.isInteger(range.offset) && range.offset >= 0 ? range.offset : 0;
       const rawLength = typeof range.length === "number" && Number.isInteger(range.length) && range.length > 0 ? range.length : MAX_READ_BYTES2;
@@ -102485,6 +102508,30 @@ var HarnessRemoteBridge = class {
       }
     }
     return isRecord22(rootPayload.args) ? { ...rootPayload, args: finalArgs } : finalArgs;
+  }
+  async resolveExternalImagePath(sessionId, path, endpoint) {
+    const grant = this.externalImageRoot;
+    if (grant?.sessionId !== sessionId || !isAbsolute11(path) || endpoint !== "workspaceFiles/stat" && endpoint !== "workspaceFiles/readBytes" || !EXTERNAL_IMAGE_EXTENSIONS.has(extname2(path).toLowerCase())) return void 0;
+    const root2 = await realpath7(grant.path).catch(() => void 0);
+    if (root2 === void 0 || isPathOutside(relative5(root2, path)) && isPathOutside(relative5(resolve9(grant.path), path))) {
+      return void 0;
+    }
+    const safeRel = await this.verifyWorkspacePathContainment(root2, path, endpoint, grant.path);
+    const absolutePath = resolve9(root2, safeRel);
+    if (!(await stat9(absolutePath)).isFile()) {
+      throw workspaceFileFailure("WORKSPACE_PATH_DENIED", "The requested workspace path is not a regular file.", "not-regular-file");
+    }
+    const file2 = await open7(absolutePath, "r");
+    try {
+      const header = Buffer.alloc(12);
+      const { bytesRead } = await file2.read(header, 0, header.length, 0);
+      if (!hasImageSignature(extname2(absolutePath).toLowerCase(), header.subarray(0, bytesRead))) {
+        throw workspaceFileFailure("WORKSPACE_PATH_DENIED", "The requested file is not an image.", "not-regular-file");
+      }
+    } finally {
+      await file2.close();
+    }
+    return absolutePath;
   }
   async resolveWorkspaceRootForSession(sessionId, signal) {
     signal.throwIfAborted();
@@ -102514,9 +102561,9 @@ var HarnessRemoteBridge = class {
    * unchanged: the canonical target must stay inside the canonical root.
    */
   async verifyWorkspacePathContainment(root2, path, endpoint, cwd2 = root2) {
-    const supplied = isAbsolute10(path) ? resolve9(path) : resolve9(root2, path);
+    const supplied = isAbsolute11(path) ? resolve9(path) : resolve9(root2, path);
     const cwdRelative = relative5(resolve9(cwd2), supplied);
-    const candidate = isAbsolute10(path) && !isPathOutside(cwdRelative) ? resolve9(root2, cwdRelative) : supplied;
+    const candidate = isAbsolute11(path) && !isPathOutside(cwdRelative) ? resolve9(root2, cwdRelative) : supplied;
     if (process.platform === "win32") {
       const rootDrive = parse4(root2).root.toLowerCase();
       const candDrive = parse4(candidate).root.toLowerCase();
@@ -102586,8 +102633,14 @@ var HarnessRemoteBridge = class {
     }
   }
 };
+function hasImageSignature(extension2, bytes) {
+  if (extension2 === ".png") return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (extension2 === ".jpg" || extension2 === ".jpeg") return bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  if (extension2 === ".gif") return bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a";
+  return extension2 === ".webp" && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+}
 function isPathOutside(rel) {
-  if (rel === ".." || isAbsolute10(rel)) return true;
+  if (rel === ".." || isAbsolute11(rel)) return true;
   if (process.platform === "win32") {
     return rel.startsWith("..\\") || rel.startsWith("../");
   }
@@ -103393,7 +103446,8 @@ var HostPluginRuntime = class {
           (sessionId) => this.acp.resolveUploadWorkspace(context.connectionId, sessionId)
         ),
         this.schedule,
-        uploadBridge === void 0 ? void 0 : (body) => uploadBridge.call({ route: "api/session/uploadFileBinary", body }, true)
+        uploadBridge === void 0 ? void 0 : (body) => uploadBridge.call({ route: "api/session/uploadFileBinary", body }, true),
+        config2.externalImageRoot
       ) : void 0;
       const fileViewer = new RemoteFileViewerBridge(
         () => this.fileViewerHost?.(),
@@ -103801,7 +103855,7 @@ var HostPluginRuntime = class {
     }
     if (this.localGateway?.supportsCarrier && this.terminalEnabled) capabilities.push("harness.terminal.v1");
     if (this.fileViewerHost?.() !== void 0) capabilities.push("fileviewer.read.v1");
-    if (this.pluginRoutes?.() !== void 0) capabilities.push("plugin.route.v1");
+    if (this.pluginRoutes?.() !== void 0) capabilities.push("plugin.route.v1", "plugin.input-prediction.v1");
     if (this.codex.isAvailable()) capabilities.push("codex.appserver.v1", "codex.appserver.transfer.v1");
     if (this.acp.enabledBackends().length > 0) {
       capabilities.push("agent.acp.v1", "agent.acp.transfer.v1", "agent.acp.workspace-files.v1");

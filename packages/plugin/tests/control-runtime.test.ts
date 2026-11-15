@@ -32,6 +32,16 @@ describe('PluginControlRuntime settings setup', () => {
     expect(settings.get().logLevel).toBe('info')
   })
 
+  it('preserves the external image root when changing unrelated settings', async () => {
+    const externalImageRoot = { sessionId: 'session-a', path: '/tmp' }
+    const settings = settingsBinding({ externalImageRoot })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), await temporaryDirectory(), settings, undefined, undefined))
+    expect(await handler('settings.development.set', { debugLogging: true }, signal())).toMatchObject({ ok: true })
+    expect(settings.get().externalImageRoot).toEqual(externalImageRoot)
+    expect(await handler('settings.appearance.set', { sidebarEntry: 'compact' }, signal())).toMatchObject({ ok: true })
+    expect(settings.get().externalImageRoot).toEqual(externalImageRoot)
+  })
+
   it('keeps pairing on local Host control and refuses Host-only role escalation', async () => {
     const directory = await temporaryDirectory()
     const settings = settingsBinding({ serverUrl: 'https://dsh.r2049.cn' })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeServerUrl, resolveConfig } from '../src/config.js'
+import { Config, entryConfigSchema, normalizeServerUrl, resolveConfig, type ConfigInput } from '../src/config.js'
 
 describe('plugin config', () => {
   it('applies safe defaults', () => {
@@ -15,6 +15,19 @@ describe('plugin config', () => {
       cursor: { enabled: false, binary: 'agent' },
     })
     expect(resolveConfig({}, { DSH_REMOTE_TERMINAL_ENABLED: 'false' }).terminal.enabled).toBe(false)
+  })
+
+  it('accepts only a session-scoped absolute external image root', () => {
+    const volatile = Config({}) as unknown as ConfigInput & { get?: () => ConfigInput }
+    const snapshot = typeof volatile.get === 'function' ? volatile.get() : volatile
+    expect(resolveConfig(entryConfigSchema({}) as ConfigInput, {}).externalImageRoot).toBeUndefined()
+    expect(resolveConfig(snapshot, {}).externalImageRoot).toBeUndefined()
+    expect(resolveConfig({}, {}).externalImageRoot).toBeUndefined()
+    expect(resolveConfig({ externalImageRoot: { sessionId: 'session-a', path: '/tmp' } }, {}).externalImageRoot)
+      .toEqual({ sessionId: 'session-a', path: '/tmp' })
+    expect(() => resolveConfig({ externalImageRoot: { sessionId: 'session-a', path: 'tmp' } }, {})).toThrow()
+    expect(() => resolveConfig({ externalImageRoot: { sessionId: '', path: '/tmp' } }, {})).toThrow()
+    expect(() => resolveConfig({ externalImageRoot: { sessionId: 'session-a' } } as never, {})).toThrow()
   })
 
   it('keeps Remote Tools enabled by default while allowing an explicit opt-out', () => {

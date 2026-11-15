@@ -818,13 +818,17 @@ Plugin Host 的 Harness 业务路由只接受 capability 对应的官方 Typert 
 ### 16.4 plugin.route.call
 
 `plugin.route.call`（capability `plugin.route.v1`）把 Host 本机其他 DSH 插件的 HTTP 路由
-（当前仅 ds-bot 的 `POST api/bot`）通过认证业务通道转发给远程 Client。Host 与 Client
-控制入口只接受 `route` 精确等于编译期固定白名单中的 `api/bot`；其他插件路径、官方
-Harness RPC 路径、路径规范化变体及 query 均以 `INVALID_MESSAGE` 拒绝，不进入本机
-Connection handler。不得通过该入口绕过 Harness Remote allowlist、Remote 设置限制或
-终端归属与输入权校验。`body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON
-对象或 `null`（数组与原始值拒绝）；额外顶层字段拒绝。Host 在进入任何本机 carrier 前
-按 `endpoint` 执行编译期固定操作白名单，新增上游操作默认拒绝。
+通过认证业务通道转发给远程 Client。Host 路由白名单精确包含 `api/bot`、
+`api/session/uploadFileBinary` 与 `api/dsh-input-prediction`；其他路径、路径规范化变体
+及 query 均以 `INVALID_MESSAGE` 拒绝，不进入本机 Connection handler。不得通过该入口
+绕过 Harness Remote allowlist、Remote 设置限制或终端归属与输入权校验。
+
+`api/bot` 的 `body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON 对象或 `null`
+（数组与原始值拒绝）；额外顶层字段拒绝。Host 在进入任何本机 carrier 前按 `endpoint`
+执行编译期固定操作白名单，新增上游操作默认拒绝。官方上传路径保持独立的 image/file
+严格 schema，只有经过 transfer 重组的上传请求使用 `MAX_HARNESS_API_TRANSFER_BYTES`
+请求上限；Bot 与预测请求及所有响应仍受 `MAX_SECURE_MESSAGE_BYTES` 限制。
+`api/dsh-input-prediction` 使用下述独立只读 schema，不接受 Bot 或上传字段。
 
 2026-11-13 对齐 [DS-Bot v0.3.6](https://github.com/Fei2411/DS-Bot/tree/v0.3.6)：
 完整暴露其 `channel.js` 的命名 endpoint 与 `computer/index.js` 的 `computer-*` endpoint，
@@ -870,7 +874,8 @@ HTML 仅展示摘要和主机打开提示，不执行 HTML/脚本，不增加网
 ```
 
 Result 为 `{ "status": number, "json": unknown }`，即本机路由的 HTTP 状态码与解析后的 JSON
-响应体。请求与响应序列化后都不得超过 `MAX_SECURE_MESSAGE_BYTES`；单次调用超时 30s。
+响应体。除上述 transfer 上传请求外，请求与响应序列化后都不得超过
+`MAX_SECURE_MESSAGE_BYTES`；单次调用超时 30s。
 Host 未注入本机路由服务时不得宣告 `plugin.route.v1`，此时 `plugin.route.call` 返回
 `FEATURE_NOT_SUPPORTED`。
 
@@ -898,6 +903,55 @@ catalog、Host 未注册 `api/bot`（404）、Host carrier 不可用（503）及
 未就绪分别返回固定错误码与安全说明，不以统一 HTTP 502 隐藏原因。取消仍拒绝 fetch。
 Host 的 Bot/Agent 界面模式仅为页面本地偏好，不影响 `api/bot` 的注册；Host 需在连接的
 同一 DSH 实例/profile 中启用 `ds-bot`。
+
+#### Harness 输入预测只读状态
+
+Host 在提供本机插件路由 dispatcher 时同时宣告 `plugin.route.v1` 与
+`plugin.input-prediction.v1`。后者表示已实现此精确路由与请求体的转发协议，**不保证安装、
+启用或配置了输入预测插件**。Client 仅在当前后端为 Harness 且 capability 包含
+`plugin.input-prediction.v1` 时调用；缺少 capability 时保持无建议，不推测版本或回退其他 API。
+
+```json
+{
+  "method": "plugin.route.call",
+  "params": {
+    "route": "api/dsh-input-prediction",
+    "body": { "sessionId": "native-harness-session-id" }
+  }
+}
+```
+
+Host 只将该请求派发为 `POST /api/dsh-input-prediction`，body 必须仅含 `sessionId`：
+字符串长度 1–256、trim 后非空且不得含首尾空白。不接受 `backend`、`endpoint`、生成参数、
+额外字段、数组、null 或原始值；外层也只接受 `route` 与 `body`。沿用 Remote 现有后端
+命名空间划分，`codex:`、`acp:`、`cursor:`、`pi:`、`opencode:`、`claude:`、`hermes:`
+开头的虚拟会话 ID 在派发前返回 `INVALID_MESSAGE`，不跨后端查找。原生会话是否存在及状态
+由预测插件查询；Remote 不生成预测、不触发重试、不发送会话消息、不采用预测。
+
+成功结果沿用 HTTP envelope：
+
+```json
+{
+  "status": 200,
+  "json": {
+    "status": "ready",
+    "completionSeq": 42,
+    "prediction": "继续检查这处实现",
+    "reason": "可选的状态原因"
+  }
+}
+```
+
+内层 `status` 为 `none | pending | ready`；`completionSeq?: number` 标识产生状态的完成事件，
+`prediction?: string` 为建议文字，`reason?: string` 为状态原因。Client 只展示有效的 ready
+建议；`ready` 仍可携带空 `prediction`（例如 `reason: "model_declined"`），此时无建议。
+none/pending、插件缺失的 HTTP 404、carrier 不可用的 503 及查询错误均无可采用建议。
+POST 是只读快照查询，不会触发预测或消耗/删除建议；重复读取保留同一完成事件标识。
+返回沿用桥接的 30 秒预算和请求/响应大小上限，HTTP 状态与 JSON 原样保留。
+
+本轮仅增加预测的原生客户端 RPC 接入，Desktop/Web 的 DS-Bot fetch 兼容入口与独立的
+官方上传入口保持原有行为，不自动接管输入预测请求。客户端的轮询、会话切换及草稿采用由各端实现；
+采用操作只填入草稿，发送仍需用户触发。
 
 ## 17. Capability
 
@@ -1238,13 +1292,28 @@ Android 用户可显式下载工作区原文件到手机（Android 10+ 使用 Me
 固定只读 allowlist：`workspaceFiles/list|stat|read|readBytes|readAll|readRelated|changes`，以及
 `officeToPdf/generation|render`。Host 官方 Session lookup、组合文件系统、分页与大小限制继续生效。
 注意：上游 `list` / `changes` 限于工作区；为修复 #250 任意文件读取漏洞，原生 `workspaceFiles/read*` 与 `stat`
-严格限制在 Session 工作区根目录（cwd）物理包含范围内，拒绝未授权的工作区外路径与越界符号链接。包含性一律以
-realpath 后的规范根目录计算，避免符号链接父目录或大小写差异造成误拒；边界本身不变。拒绝结果可在
+默认限制在 Session 工作区根目录（cwd）物理包含范围内，拒绝未授权的工作区外路径与越界符号链接。包含性一律以
+realpath 后的规范根目录计算，避免符号链接父目录或大小写差异造成误拒。拒绝结果可在
 `rpc.error.details.reason` 中携带稳定的安全分类（`scope-missing`、`authority-unavailable`、`root-invalid`、
 `outside-root`、`symlink`、`not-regular-file`、`not-found`、`too-large`、`io`），不得包含路径、文件名、
 文件正文或原始文件系统错误。旧 `fileviewer.read.v1` 仍使用 provider 授权。
 对 `codex:<threadId>` scope，Host 使用 CodeX thread 当前 `cwd` 作为独立根目录，并额外拒绝根目录之外的路径；
 该映射不改变 Harness Session 的既有工作区权限。CodeX 终端同样按 thread 建立独立 context。
+
+Host 可在本地插件配置中显式设置 `externalImageRoot: { sessionId, path }`，允许指定 Harness
+Session 读取该绝对目录中的图片，例如：
+
+```yaml
+externalImageRoot:
+  sessionId: native-harness-session-id
+  path: /tmp
+```
+
+该配置默认关闭，仅对指定 Session 的 `workspaceFiles/stat` 和 `workspaceFiles/readBytes`
+绝对路径生效。Host 验证目录包含性、普通文件类型及 PNG/JPEG/GIF/WebP 扩展名和文件头；
+其他 Session、其他操作和越界符号链接仍受原有工作区限制。无范围的整图读取上限为 4 MiB；
+较大图片可通过显式范围分块读取。配置在本地持久保存，修改或删除后需要重启 Host 才会生效；
+Session 结束不会自动移除该配置。
 
 `terminal.enabled` 默认 true。Host 本地开关切换即保存并更新拦截，在后续加密 capability 探测中宣告 `harness.terminal.v1`。
 只允许 unary `terminal/environment|shells|list|create|write|resize|rename|close` 与 stream
@@ -2155,7 +2224,9 @@ In local mode the request retains its original destination. In Remote mode,
 with body `{ endpoint: "image", payload: { sessionId, mediaType, name?, data } }`
 for images, or `{ endpoint: "file", payload: { sessionId, name?, data } }` for
 ordinary files, including empty files.
-`data` is base64; PNG/JPEG/WebP/GIF are accepted. This local control operation does not expose the upload path through the encrypted Bot route allowlist. The Client runtime routes
+`data` is base64; PNG/JPEG/WebP/GIF are accepted. The Host also accepts this fixed
+route through `plugin.route.call` with the attachment schema and normal encrypted
+message size limit described in §16.4. The Client runtime routes
 attachments through the dedicated `remoteUploads/upload` Harness Remote endpoint
 (`remoteImages/upload` remains an alias),
 using the existing ordered `harness.remote.transfer.*` protocol for oversized

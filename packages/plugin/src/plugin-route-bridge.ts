@@ -5,7 +5,7 @@ import type { SafeLogger } from './logging.js'
 import { RpcError } from './safe-error.js'
 
 /** Local plugin web routes forwardable over the authenticated channel (POST only). */
-export const PLUGIN_ROUTE_ALLOWLIST = ['api/bot', 'api/session/uploadFileBinary'] as const
+export const PLUGIN_ROUTE_ALLOWLIST = ['api/bot', 'api/session/uploadFileBinary', 'api/dsh-input-prediction'] as const
 
 /** DS-Bot v0.3.6 channel + computer endpoints; unknown future operations stay local. */
 export const BOT_REMOTE_OPERATIONS = [
@@ -56,13 +56,23 @@ export type PluginRouteDispatcher = (
   signal: AbortSignal,
 ) => Promise<{ status: number; json: unknown }>
 
-const callSchema = z.object({
-  route: z.enum(PLUGIN_ROUTE_ALLOWLIST),
-  body: z.object({
-    endpoint: z.enum(BOT_REMOTE_OPERATIONS),
-    payload: z.record(z.string(), z.unknown()).nullable().optional(),
+const callSchema = z.discriminatedUnion('route', [
+  z.object({
+    route: z.literal('api/bot'),
+    body: z.object({
+      endpoint: z.enum(BOT_REMOTE_OPERATIONS),
+      payload: z.record(z.string(), z.unknown()).nullable().optional(),
+    }).strict(),
   }).strict(),
-}).strict()
+  z.object({
+    route: z.literal('api/dsh-input-prediction'),
+    body: z.object({
+      sessionId: z.string().min(1).max(256).refine(value => value.trim() === value && value.trim().length > 0)
+        // Same backend namespaces as workspace-upload-authority; prediction is Harness-only.
+        .refine(value => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value)),
+    }).strict(),
+  }).strict(),
+])
 
 /** Fixed official attachment intake; caller-selected filesystem paths are forbidden. */
 const uploadFields = {

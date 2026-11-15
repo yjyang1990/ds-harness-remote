@@ -3,6 +3,8 @@ import { HostConnectionService } from '@deepseek-ai/dsh-client-connection'
 import { describe, expect, it, vi } from 'vitest'
 import { createPluginRouteDispatcher } from '../src/plugin-route-dispatcher.js'
 import { PluginRouteBridge } from '../src/plugin-route-bridge.js'
+import { createRpcRequest } from '@dsh-remote/protocol'
+import { RpcRouter } from '../src/rpc-router.js'
 import { runScenarios } from '../../../scripts/test-scenarios.mjs'
 
 describe('Host plugin route carrier', () => {
@@ -26,6 +28,38 @@ describe('Host plugin route carrier', () => {
         .resolves.toEqual({ status: 404, json: 'not found' })
       expect(fetch).toHaveBeenCalledOnce()
       expect(readPort).not.toHaveBeenCalled()
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('carries prediction states and a missing plugin through real RPC and the official Fetch dispatcher', async () => {
+    const ctx = new Context()
+    try {
+      await ctx.plugin(owner => { new HostConnectionService(owner, [], {} as never) }).await()
+      const connection = ctx.get('connection') as HostConnectionService
+      const states = [
+        { status: 'none', reason: 'no-completion' },
+        { status: 'pending', completionSeq: 7 },
+        { status: 'ready', completionSeq: 7, prediction: 'Next step' },
+      ]
+      let state = states[0]
+      const fetch = vi.fn(async (request: Request) => {
+        expect(request.method).toBe('POST')
+        expect(await request.json()).toEqual({ sessionId: 'session-1' })
+        return Response.json(state)
+      })
+      const unregister = connection.fetch.register({ path: '/api/dsh-input-prediction', methods: ['POST'], requestBody: 'buffered', fetch })
+      const bridge = new PluginRouteBridge(createPluginRouteDispatcher(() => connection, () => undefined, connection.createPeer({ principal: { kind: 'owner' } })))
+      const router = new RpcRouter(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, bridge)
+      const call = () => router.handle(createRpcRequest('plugin.route.call', { route: 'api/dsh-input-prediction', body: { sessionId: 'session-1' } }))
+      await runScenarios(states.map(next => ({ name: next.status, run: async () => {
+        state = next
+        await expect(call()).resolves.toMatchObject({ type: 'rpc.response', payload: { result: { status: 200, json: next } } })
+      } })))
+      expect(fetch).toHaveBeenCalledTimes(3)
+      await unregister()
+      await expect(call()).resolves.toMatchObject({ type: 'rpc.response', payload: { result: { status: 404, json: 'not found' } } })
     } finally {
       await ctx.fiber.dispose()
     }

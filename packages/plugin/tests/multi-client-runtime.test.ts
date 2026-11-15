@@ -32,6 +32,39 @@ describe('HostPluginRuntime multi-Client routing', () => {
     } finally { start.mockRestore() }
   })
 
+  it('advertises prediction forwarding only with a plugin route dispatcher, independent of plugin installation', async () => {
+    await runScenarios([false, true].map(available => ({ name: `dispatcher=${available}`, run: async () => {
+      const dispatch = vi.fn(async () => ({ status: 404, json: 'not found' }))
+      const runtime = new HostPluginRuntime(config(), identities(), logger(), undefined, undefined, undefined,
+        () => available ? dispatch : undefined)
+      const channel = fakeChannel('prediction-capability', 'client-phone')
+      const call = async (method: 'harness.transport.describe' | 'plugin.route.call', params: unknown) => {
+        const request = createRpcRequest(method, params)
+        channel.push(request)
+        let response: RemoteMessage | undefined
+        await vi.waitFor(() => {
+          response = channel.sent().find(message => (message.type === 'rpc.response' || message.type === 'rpc.error')
+            && (message.payload as RpcResponsePayload | RpcErrorPayload).requestId === request.id)
+          expect(response).toBeDefined()
+        })
+        return response!
+      }
+      try {
+        await runtime.start()
+        await runtime.acceptAuthenticatedPeer(channel)
+        const description = await call('harness.transport.describe', {})
+        const capabilities = ((description.payload as RpcResponsePayload).result as { capabilities: string[] }).capabilities
+        expect(capabilities.includes('plugin.route.v1')).toBe(available)
+        expect(capabilities.includes('plugin.input-prediction.v1')).toBe(available)
+        expect(dispatch).not.toHaveBeenCalled()
+        const result = await call('plugin.route.call', { route: 'api/dsh-input-prediction', body: { sessionId: 'session-1' } })
+        expect(result).toMatchObject(available
+          ? { type: 'rpc.response', payload: { result: { status: 404, json: 'not found' } } }
+          : { type: 'rpc.error', payload: { code: 'FEATURE_NOT_SUPPORTED' } })
+      } finally { await runtime.close() }
+    } })))
+  })
+
   it('advertises CodeX readiness over the authenticated channel', async () => {
     const rows = [
       'ready',

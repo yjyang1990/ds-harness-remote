@@ -21,12 +21,45 @@ describe('PluginRouteBridge', () => {
     expect(dispatch).toHaveBeenCalledWith('api/bot', { endpoint: 'state', payload: null }, expect.any(AbortSignal))
   })
 
+  it('validates the Harness prediction body independently of Bot operations', async () => {
+    await runScenarios([
+      { name: 'native session', body: { sessionId: 'session-1' }, allowed: true },
+      ...[
+        undefined, null, [], 'session-1', {}, { sessionId: 1 }, { sessionId: '' },
+        { sessionId: ' ' }, { sessionId: ' session-1' }, { sessionId: 'session-1\n' },
+        { sessionId: 'x'.repeat(257) }, { sessionId: 'session-1', endpoint: 'generate' },
+        { sessionId: 'session-1', backend: 'harness' }, { endpoint: 'state', payload: null },
+        ...['codex', 'acp', 'cursor', 'pi', 'opencode', 'claude', 'hermes'].map(backend => ({ sessionId: `${backend}:session-1` })),
+      ].map(body => ({ name: `invalid ${JSON.stringify(body)}`, body, allowed: false })),
+    ].map(row => ({ name: row.name, run: async () => {
+      const dispatch = dispatcher({ json: { status: 'ready', completionSeq: 7, prediction: 'Next step' } })
+      const call = new PluginRouteBridge(dispatch).call({ route: 'api/dsh-input-prediction', body: row.body })
+      if (row.allowed) {
+        await expect(call).resolves.toEqual({ status: 200, json: { status: 'ready', completionSeq: 7, prediction: 'Next step' } })
+        expect(dispatch).toHaveBeenCalledWith('api/dsh-input-prediction', row.body, expect.any(AbortSignal))
+      } else {
+        await expect(call).rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
+        expect(dispatch).not.toHaveBeenCalled()
+      }
+    } })))
+    const dispatch = dispatcher()
+    const bridge = new PluginRouteBridge(dispatch)
+    for (const extra of [{ method: 'GET' }, { backend: 'codex' }]) {
+      await expect(bridge.call({ route: 'api/dsh-input-prediction', body: { sessionId: 'session-1' }, ...extra }))
+        .rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
+    }
+    await expect(bridge.call({ route: 'api/bot', body: { sessionId: 'session-1' } }))
+      .rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
   it('rejects routes outside the exact plugin allowlist before dispatch', async () => {
     await runScenarios([
       'http://evil/api/bot', '../etc/passwd', '', `api/${'x'.repeat(65)}`,
       'api/bot?x=1', '/api/bot', 'api/unknown', 'api/bot/child',
       'api/../ds-harness-remote/host.logout', 'api/./bot', 'api/other/../bot',
-      'api/%62ot', 'api/bot\n',
+      'api/%62ot', 'api/bot\n', '/api/dsh-input-prediction', 'api/dsh-input-prediction?sessionId=s',
+      'api/dsh-input-prediction/generate', 'api/./dsh-input-prediction', 'api/%64sh-input-prediction',
     ].map(route => ({
       name: JSON.stringify(route),
       run: async () => {
