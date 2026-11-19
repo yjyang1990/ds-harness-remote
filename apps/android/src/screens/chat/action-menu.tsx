@@ -14,7 +14,6 @@ type Props = {
   onClose: () => void
   /** Window rect of the composer the sheet grows out of. */
   anchor?: Rect
-  canAttachImages: boolean
   attachmentPicking: boolean
   takePhoto: () => Promise<void>
   pickImages: () => Promise<void>
@@ -35,7 +34,7 @@ type Props = {
   onOpenPermissions: () => void
 }
 
-export function ChatActionMenu({ visible, onClose, anchor, canAttachImages, attachmentPicking,
+export function ChatActionMenu({ visible, onClose, anchor, attachmentPicking,
   takePhoto, pickImages, pickFiles, workspaceLabel, modeLabel, supportsModeSelection,
   agentPresetSelecting, toolsAvailable, permissionsAvailable, permissionSelecting,
   permissionDisabled, permissionLabel, onReferenceChat, onOpenWorkspace, onOpenMode, onOpenTools, onOpenPermissions }: Props) {
@@ -51,32 +50,28 @@ export function ChatActionMenu({ visible, onClose, anchor, canAttachImages, atta
           nestedScrollEnabled
         >
           <View style={styles.plusCardRow}>
-            {canAttachImages && (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={strings.chat.takePhoto}
-                  accessibilityState={{ disabled: attachmentPicking }}
-                  disabled={attachmentPicking}
-                  onPress={() => { onClose(); void takePhoto() }}
-                  style={({ pressed }) => [styles.plusCard, pressed && styles.plusMenuOptionPressed, attachmentPicking && styles.plusMenuOptionDisabled]}
-                >
-                  <Camera size={22} color={colors.primary} />
-                  <Text style={styles.plusCardText}>{strings.chat.takePhoto}</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={strings.chat.photos}
-                  accessibilityState={{ disabled: attachmentPicking }}
-                  disabled={attachmentPicking}
-                  onPress={() => { onClose(); void pickImages() }}
-                  style={({ pressed }) => [styles.plusCard, pressed && styles.plusMenuOptionPressed, attachmentPicking && styles.plusMenuOptionDisabled]}
-                >
-                  <Images size={22} color={colors.primary} />
-                  <Text style={styles.plusCardText}>{strings.chat.photos}</Text>
-                </Pressable>
-              </>
-            )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={strings.chat.takePhoto}
+              accessibilityState={{ disabled: attachmentPicking }}
+              disabled={attachmentPicking}
+              onPress={() => { onClose(); void takePhoto() }}
+              style={({ pressed }) => [styles.plusCard, pressed && styles.plusMenuOptionPressed, attachmentPicking && styles.plusMenuOptionDisabled]}
+            >
+              <Camera size={22} color={colors.primary} />
+              <Text style={styles.plusCardText}>{strings.chat.takePhoto}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={strings.chat.photos}
+              accessibilityState={{ disabled: attachmentPicking }}
+              disabled={attachmentPicking}
+              onPress={() => { onClose(); void pickImages() }}
+              style={({ pressed }) => [styles.plusCard, pressed && styles.plusMenuOptionPressed, attachmentPicking && styles.plusMenuOptionDisabled]}
+            >
+              <Images size={22} color={colors.primary} />
+              <Text style={styles.plusCardText}>{strings.chat.photos}</Text>
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={strings.chat.files}
@@ -92,12 +87,12 @@ export function ChatActionMenu({ visible, onClose, anchor, canAttachImages, atta
           {onReferenceChat !== undefined && (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="引用对话"
+              accessibilityLabel={strings.chat.referenceChat}
               onPress={() => { onClose(); onReferenceChat() }}
               style={({ pressed }) => [styles.plusMenuOption, pressed && styles.plusMenuOptionPressed]}
             >
               <MessageSquare size={20} color={colors.primary} />
-              <Text style={styles.plusMenuOptionText}>引用对话</Text>
+              <Text style={styles.plusMenuOptionText}>{strings.chat.referenceChat}</Text>
               <ChevronRight size={16} color={colors.muted} />
             </Pressable>
           )}

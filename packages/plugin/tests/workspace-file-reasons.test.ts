@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, open, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessRemoteBridge } from '../src/harness-remote-bridge.js'
 import type { LocalTypertGateway } from '../src/typert-gateway-contract.js'
@@ -93,6 +93,66 @@ describe('workspace file denial reasons', () => {
       .resolves.toMatchObject({ ok: true })
     await expect(bridge.call({ endpoint: 'workspaceFiles/read', payload: { args: { workspaceFileScopeId: 's1', path: join(outside, 'secret.txt') } } }))
       .rejects.toMatchObject({ code: 'WORKSPACE_PATH_DENIED', details: { reason: 'outside-root' } })
+  })
+
+  it('reads only genuine external images from the configured session and root', async () => {
+    const { root, outside } = await fixture()
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+    const image = join(outside, 'image.png')
+    const alias = join(dirname(outside), 'external-alias')
+    const sibling = join(dirname(outside), 'outside-other.png')
+    await writeFile(image, imageBytes)
+    await writeFile(join(outside, 'fake.png'), 'not an image')
+    await writeFile(sibling, imageBytes)
+    await mkdir(join(outside, 'directory.png'))
+    await symlink(outside, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await symlink(sibling, join(outside, 'link.png'))
+    const dispatch = vi.fn(async (endpoint: string, payload: unknown) => {
+      const args = (payload as { args: { path: string; options?: { range?: { offset: number; length: number } } } }).args
+      if (endpoint === 'workspaceFiles/stat') {
+        const info = await stat(args.path)
+        return { ok: true as const, value: { absolutePath: args.path, bytes: info.size } }
+      }
+      const data = await readFile(args.path)
+      const range = args.options?.range
+      return { ok: true as const, value: { data: range === undefined ? data : data.subarray(range.offset, range.offset + range.length) } }
+    })
+    const bridge = new HarnessRemoteBridge(
+      gateway(dispatch), vi.fn(async () => undefined), undefined, '0.2.2-rc.3', undefined, undefined,
+      async sessionId => sessionId === 's1' || sessionId === 's2' ? root : undefined,
+      undefined, undefined, { sessionId: 's1', path: alias },
+    )
+    const call = (endpoint: string, path: string, sessionId = 's1', options?: object) =>
+      bridge.call({ endpoint, payload: { args: { workspaceFileScopeId: sessionId, path, ...(options ? { options } : {}) } } })
+
+    await expect(call('workspaceFiles/stat', join(alias, 'image.png'))).resolves.toMatchObject({ ok: true, value: { bytes: imageBytes.length } })
+    await expect(call('workspaceFiles/readBytes', await realpath(image), 's1', {})).resolves.toMatchObject({ ok: true, value: { data: imageBytes.toString('base64') } })
+    expect(dispatch).toHaveBeenLastCalledWith('workspaceFiles/readBytes', { args: { workspaceFileScopeId: 's1', path: await realpath(image), options: {} } }, expect.any(AbortSignal))
+    await call('workspaceFiles/readBytes', await realpath(image), 's1', { range: { offset: 0, length: 8 } })
+    expect(dispatch).toHaveBeenLastCalledWith('workspaceFiles/readBytes', { args: { workspaceFileScopeId: 's1', path: await realpath(image), options: { range: { offset: 0, length: 8 } } } }, expect.any(AbortSignal))
+
+    const large = join(outside, 'large.png')
+    const file = await open(large, 'w')
+    try {
+      await file.write(imageBytes.subarray(0, 8), 0, 8, 0)
+      await file.truncate(4 * 1024 * 1024 + 1)
+    } finally { await file.close() }
+    await expect(call('workspaceFiles/readBytes', join(alias, 'large.png'), 's1', {})).rejects.toMatchObject({ code: 'WORKSPACE_TOO_LARGE', details: { reason: 'too-large' } })
+    await expect(call('workspaceFiles/readBytes', join(alias, 'large.png'), 's1', { range: { offset: 0, length: 8 } }))
+      .resolves.toMatchObject({ ok: true, value: { data: imageBytes.subarray(0, 8).toString('base64') } })
+
+    for (const [endpoint, path, session, options] of [
+      ['workspaceFiles/stat', image, 's2', undefined],
+      ['workspaceFiles/stat', sibling, 's1', undefined],
+      ['workspaceFiles/stat', join(outside, 'secret.txt'), 's1', undefined],
+      ['workspaceFiles/stat', join(outside, 'fake.png'), 's1', undefined],
+      ['workspaceFiles/stat', join(outside, 'directory.png'), 's1', undefined],
+      ['workspaceFiles/stat', join(outside, 'link.png'), 's1', undefined],
+      ['workspaceFiles/read', image, 's1', undefined],
+      ['workspaceFiles/readBytes', 'image.png', 's1', { baseFile: image }],
+    ] as const) {
+      await expect(call(endpoint, path, session, options)).rejects.toMatchObject({ code: 'WORKSPACE_PATH_DENIED' })
+    }
   })
 
   it('keeps baseFile traversal inside the same containment rules', async () => {

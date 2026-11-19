@@ -1,4 +1,5 @@
 import { hostname } from 'node:os'
+import { isAbsolute } from 'node:path'
 import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -18,6 +19,7 @@ export interface Config {
   sidebar?: { entry?: 'standard' | 'compact' }
   hostControl?: { enabled?: boolean }
   loopback?: { ports?: number[] }
+  externalImageRoot?: { sessionId: string; path: string }
   forceRelay?: boolean
   /**
    * When a known peer device presents a NEW identity key after re-authorizing with the
@@ -88,6 +90,7 @@ export interface ResolvedConfig {
   sidebar: { entry: 'standard' | 'compact' }
   hostControl?: { enabled: boolean }
   loopback: { ports: number[] }
+  externalImageRoot?: { sessionId: string; path: string }
   codex: ResolvedCodexConfig
   cursor: ResolvedCursorConfig
   acp?: ResolvedAcpConfig
@@ -118,6 +121,7 @@ export const entryConfigSchema = s.object({
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
   hostControl: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
+  externalImageRoot: s.object({ sessionId: s.string(), path: s.string() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -175,6 +179,10 @@ const configSchema = z.object({
   sidebar: z.object({ entry: z.enum(['standard', 'compact']).optional() }).strict().optional(),
   hostControl: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   loopback: z.object({ ports: z.array(z.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
+  externalImageRoot: z.union([
+    z.object({ sessionId: z.string().min(1).max(512), path: z.string().min(1).max(4096).refine(isAbsolute, 'Image root must be absolute') }).strict(),
+    z.object({}).strict().transform(() => undefined),
+  ]).optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -223,6 +231,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     remoteTools: { enabled: parsed.remoteTools?.enabled ?? true },
     sidebar: { entry: parsed.sidebar?.entry === 'compact' ? 'compact' : 'standard' },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
+    ...(parsed.externalImageRoot === undefined ? {} : { externalImageRoot: parsed.externalImageRoot }),
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
     logLevel: parsed.logLevel ?? 'info',

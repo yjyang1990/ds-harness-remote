@@ -10,6 +10,7 @@ import { compareVersions } from '../version-compare.js'
 import { deepSeekWorkspaceIcon, gptWorkspaceIcon } from './icons.js'
 import { pendingWorkspaceSelectionKey } from './navigation.js'
 import { connectedClientModeLabel, connectedProgress, connectionErrorMessage, displayRemoteAccount, formatPlatform, messageOf, startupErrorMessage } from './presentation.js'
+import { settleLostUpgrade } from './plugin-upgrade.js'
 import { createRemoteProgressView, runConnectHostProgress } from './progress.js'
 import type {
   ClientReact,
@@ -112,6 +113,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [showAllWorkspaces, setShowAllWorkspaces] = React.useState(false)
     const [showAllCodexWorkspaces, setShowAllCodexWorkspaces] = React.useState(false)
     const [devicesOpen, setDevicesOpen] = React.useState(false)
+    const [upgradePhase, setUpgradePhase] = React.useState<'idle' | 'running' | 'verifying' | 'started' | 'failed' | 'unknown'>('idle')
+    const [upgradeError, setUpgradeError] = React.useState<string | undefined>(undefined)
     const [showAllCursorWorkspaces, setShowAllCursorWorkspaces] = React.useState(false)
     const [showAllAntigravityWorkspaces, setShowAllAntigravityWorkspaces] = React.useState(false)
     const [showAllPiWorkspaces, setShowAllPiWorkspaces] = React.useState(false)
@@ -134,6 +137,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const claudeWorkspaceListId = 'dsh-remote-claude-workspace-list'
     const hermesWorkspaceListId = 'dsh-remote-hermes-workspace-list'
     const [busy, setBusy] = React.useState(false)
+    const [refreshingHosts, setRefreshingHosts] = React.useState(false)
     // Remain undecided until local credentials or an explicit auth rejection
     // establish that login is required. Network failures are not sign-outs.
     const [needsAuthorization, setNeedsAuthorization] = React.useState<boolean | undefined>(undefined)
@@ -547,6 +551,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
 
     const refreshRemote = async (): Promise<void> => {
       setBusy(true)
+      setRefreshingHosts(true)
       setNotice(undefined)
       setError(undefined)
       try {
@@ -745,6 +750,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       } catch (reason) {
         setError(connectionErrorMessageFor(reason, t))
       } finally {
+        setRefreshingHosts(false)
         setBusy(false)
       }
     }
@@ -1074,6 +1080,44 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const updateNotice = updateInfo !== undefined && localUpdateAvailable
       ? t('updateAvailable', { latest: updateInfo.latestVersion, current: updateInfo.currentVersion })
       : undefined
+    const releasesUrl = 'https://github.com/liguobao/ds-harness-remote/releases'
+    const canUpgradeInPlace = updateInfo?.upgrade === 'ready'
+    const startLocalUpgrade = async (): Promise<void> => {
+      if (!canUpgradeInPlace || updateInfo === undefined) return
+      setUpgradePhase('running')
+      setUpgradeError(undefined)
+      try {
+        const result = await props.control<{ status: string; message?: string }>('plugin.update', {
+          version: updateInfo.latestVersion,
+        })
+        if (result.status === 'started') {
+          setUpgradePhase('started')
+          return
+        }
+        if (result.status === 'manual') {
+          setUpgradePhase('idle')
+          window.open(releasesUrl, '_blank', 'noopener')
+          return
+        }
+        setUpgradePhase('failed')
+        setUpgradeError(typeof result.message === 'string' && result.message !== '' ? result.message : t('pluginUpdateFailed'))
+      } catch (reason) {
+        // A lost response is ambiguous: the manager unloads this plugin once
+        // installation starts, but a network error before the request reached
+        // the Host looks identical. Decide from the Host's reported version.
+        setUpgradePhase('verifying')
+        const outcome = await settleLostUpgrade(
+          () => props.control<RemoteStatus>('status'),
+          updateInfo.latestVersion,
+        )
+        if (outcome === 'upgraded') {
+          setUpgradePhase('started')
+          return
+        }
+        setUpgradePhase('unknown')
+        setUpgradeError(messageOf(reason, t))
+      }
+    }
     const deviceUpdateAvailable = (device: RemoteDevice): boolean =>
       updateInfo !== undefined
       && device.clientVersion !== undefined
@@ -1188,9 +1232,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         disabled: busy,
         onClick: () => void openLocalWorkspaces(),
       }, t('exitRemote')) : null)
-    // The Compact style drops the label and lives in the account row, so it is
-    // always a plain icon button regardless of the current Remote mode.
-    const accountEntry = React.createElement('div', { className: `dshRemoteAccountEntry${remoteActive ? ' isActive' : ''}` },
+    // Compact stays in the account row, but remote mode must expose the Host
+    // identity and the same explicit exit action as the standard entry.
+    const accountEntry = remoteActive ? entry : React.createElement('div', { className: `dshRemoteAccountEntry${remoteActive ? ' isActive' : ''}` },
       React.createElement('button', {
         type: 'button',
         className: 'dshRemoteAccountEntryButton',
@@ -1417,7 +1461,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   className: `dshRemoteHostList${connectingHost === undefined ? '' : ' isCollapsed'}`,
                   'aria-busy': connectingHost === undefined ? undefined : true,
                 }, listedHosts.length === 0
-                  ? (error !== undefined ? null : React.createElement('p', null, busy ? t('checkingConnection') : t(status?.host?.pairingHostOnly ? 'pairingHostOnly' : 'noRemoteHosts')))
+                  ? (error !== undefined || refreshingHosts ? null : React.createElement('p', null, t(status?.host?.pairingHostOnly ? 'pairingHostOnly' : 'noRemoteHosts')))
                   : listedHosts.map(device => React.createElement('button', {
                     type: 'button',
                     key: device.deviceId,
@@ -1438,6 +1482,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                 ? (connectingHost === undefined ? React.createElement(React.Fragment, null,
                   status?.host?.pairingHostOnly ? null : React.createElement('p', { className: 'dshRemoteHint' }, t('selectHostHint')),
                   React.createElement('footer', { className: 'dshRemoteAccountFooter' },
+                    refreshingHosts ? React.createElement('span', { className: 'dshRemoteHostLoading', role: 'status', 'aria-label': t('checkingConnection') },
+                      React.createElement('span', { className: 'dshRemoteLoginSpinner', 'aria-hidden': true })) : null,
                     React.createElement('span', { className: 'dshRemoteHostNameLine' },
                       React.createElement('span', null, status?.target?.name ?? status?.deviceName ?? (status?.host?.account === undefined ? t('account') : displayRemoteAccount(status.host.account))),
                       React.createElement(ServerNotice, {
@@ -1445,13 +1491,36 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                         linked: connectedCount > 0 || status?.connected === true,
                         expiresAt: status?.host?.recoveryExpiresAt ?? status?.network?.recoveryExpiresAt, t,
                       })),
-                    updateNotice === undefined ? null : React.createElement('a', {
-                      className: 'dshRemoteAccountUpdate',
-                      href: 'https://github.com/liguobao/ds-harness-remote/releases',
-                      target: '_blank',
-                      rel: 'noreferrer',
-                      title: updateNotice,
-                    }, t('updateAvailableShort', { version: updateInfo?.latestVersion ?? '' })),
+                    updateNotice === undefined ? null : canUpgradeInPlace
+                      ? React.createElement(React.Fragment, null,
+                        React.createElement('button', {
+                          type: 'button',
+                          className: 'dshRemoteAccountUpdate',
+                          disabled: upgradePhase === 'running' || upgradePhase === 'verifying' || upgradePhase === 'started',
+                          title: upgradePhase === 'failed' || upgradePhase === 'unknown' ? upgradeError ?? updateNotice : updateNotice,
+                          onClick: () => void startLocalUpgrade(),
+                        }, t(
+                          upgradePhase === 'running' || upgradePhase === 'verifying' ? 'pluginUpdating'
+                            : upgradePhase === 'started' ? 'pluginUpdateReload'
+                              : upgradePhase === 'failed' ? 'pluginUpdateFailed'
+                                : upgradePhase === 'unknown' ? 'pluginUpdateUnknown'
+                                  : 'updateAvailableShort',
+                          { version: updateInfo?.latestVersion ?? '' },
+                        )),
+                        React.createElement('a', {
+                          className: 'dshRemoteAccountUpdate',
+                          href: releasesUrl,
+                          target: '_blank',
+                          rel: 'noreferrer',
+                          title: updateNotice,
+                        }, t('pluginUpdateManual')))
+                      : React.createElement('a', {
+                        className: 'dshRemoteAccountUpdate',
+                        href: releasesUrl,
+                        target: '_blank',
+                        rel: 'noreferrer',
+                        title: updateNotice,
+                      }, t('updateAvailableShort', { version: updateInfo?.latestVersion ?? '' })),
                     props.openSettings === undefined ? null : React.createElement('button', {
                       type: 'button', className: 'dshRemoteAccountSettings',
                       onClick: props.openSettings,

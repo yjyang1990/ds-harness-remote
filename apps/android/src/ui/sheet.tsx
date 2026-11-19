@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   Animated,
   Easing,
@@ -27,6 +27,23 @@ import { useResponsiveLayout } from './responsive'
 import { radius, spacing, type ThemeColors } from './theme'
 import { useReduceMotion } from './use-reduce-motion'
 import { useThemedStyles } from './use-themed-styles'
+
+// When a user jumps from one sheet straight to another (e.g. `+` menu -> picker),
+// immediately finish any closing sheet's exit so two transparent Modal windows
+// never stack on Android or steal autoFocus when the old Dialog unmounts.
+const sheetOpenListeners = new Set<(openerId: string) => void>()
+let routeDismissEpoch = 0
+function notifySheetOpening(openerId: string) {
+  for (const listener of sheetOpenListeners) {
+    listener(openerId)
+  }
+}
+
+/** Finish any in-flight or synchronous sheet exit immediately before switching to a new route. */
+export function dismissClosingSheets() {
+  routeDismissEpoch += 1
+  notifySheetOpening('__route__')
+}
 
 /**
  * Bottom sheet container with an interruptible enter/exit transition.
@@ -58,7 +75,7 @@ export function SheetModal({
   children: ReactNode
   backdropStyle?: StyleProp<ViewStyle>
   sheetStyle?: StyleProp<ViewStyle>
-  /** Wrap in `KeyboardAvoidingView` for sheets with text inputs (rename dialogs). */
+  /** Keep input sheets and their actions above the soft keyboard. */
   avoidKeyboard?: boolean
   dismissLabel?: string
 }) {
@@ -67,18 +84,52 @@ export function SheetModal({
   const { sheetMaxHeight } = useResponsiveLayout()
   const { height: windowHeight } = useWindowDimensions()
   const reduceMotion = useReduceMotion()
+  const sheetId = useId()
   const [phase, setPhase] = useState<SheetPhase>(() => visible ? 'opening' : 'unmounted')
+  const [availableHeight, setAvailableHeight] = useState<number>()
   const progress = useRef(new Animated.Value(0)).current
   const animationRef = useRef<Animated.CompositeAnimation | null>(null)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const openedAtRouteEpochRef = useRef(routeDismissEpoch)
+  const supersededByOtherRef = useRef(false)
   // Keep the closing sheet populated after the caller clears its target.
   const retainedChildren = useRef(children)
   if (visible) retainedChildren.current = children
 
   useEffect(() => {
-    setPhase(current => nextSheetPhase(current, visible))
-  }, [visible])
+    const onOtherSheetOpen = (openerId: string) => {
+      if (openerId === sheetId || visibleRef.current) return
+      supersededByOtherRef.current = true
+      setPhase(current => {
+        if (current === 'unmounted') return current
+        animationRef.current?.stop()
+        return nextSheetPhase(current, false, true)
+      })
+    }
+    sheetOpenListeners.add(onOtherSheetOpen)
+    return () => { sheetOpenListeners.delete(onOtherSheetOpen) }
+  }, [sheetId])
 
   useEffect(() => {
+    if (visible) {
+      openedAtRouteEpochRef.current = routeDismissEpoch
+      supersededByOtherRef.current = false
+      notifySheetOpening(sheetId)
+      setPhase(current => nextSheetPhase(current, true))
+      return
+    }
+    const superseded = supersededByOtherRef.current || routeDismissEpoch !== openedAtRouteEpochRef.current
+    if (superseded) animationRef.current?.stop()
+    setPhase(current => nextSheetPhase(current, false, superseded))
+  }, [visible, sheetId])
+
+  useEffect(() => {
+    if (phase === 'unmounted') {
+      animationRef.current?.stop()
+      progress.setValue(0)
+      return
+    }
     if (phase !== 'opening' && phase !== 'closing') return
     animationRef.current?.stop()
     const animation = Animated.timing(progress, {
@@ -105,7 +156,11 @@ export function SheetModal({
   const content = visible ? children : retainedChildren.current
 
   const body = (
-    <View style={styles.container} pointerEvents="box-none">
+    <View
+      style={styles.container}
+      pointerEvents="box-none"
+      onLayout={event => setAvailableHeight(event.nativeEvent.layout.height)}
+    >
       <Animated.View
         pointerEvents="none"
         style={[StyleSheet.absoluteFill, styles.backdrop, backdropStyle, { opacity: progress }]}
@@ -123,7 +178,9 @@ export function SheetModal({
         style={[
           styles.sheet,
           {
-            maxHeight: sheetMaxHeight,
+            // A resized Modal may be shorter than the normal sheet cap. Leave
+            // the status-bar inset above tall, scrollable input forms too.
+            maxHeight: Math.min(sheetMaxHeight, Math.max(0, (availableHeight ?? windowHeight) - insets.top)),
             paddingLeft: spacing.lg + insets.left,
             paddingRight: spacing.lg + insets.right,
             paddingBottom: Math.max(spacing.xxl, insets.bottom + spacing.sm),
@@ -148,7 +205,7 @@ export function SheetModal({
       {avoidKeyboard
         ? (
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.container}
           >
             {body}

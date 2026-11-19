@@ -1,8 +1,8 @@
 import { compactHistory } from './compact-history.js'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { lstat, realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
+import { lstat, open, realpath, stat } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { TerminalCarrierCompat, usesDuplexTerminal } from './terminal-carrier-compat.js'
 import type {
   HarnessApiTransferChunkParams,
@@ -73,10 +73,10 @@ const commandExecuteArgsSchema = z.object({
   agentId: z.string().min(1).max(128),
   line: z.string().min(1).max(2048),
   // dsh-commands <= 0.1.2 calls this field `images`; dsh-commands 0.1.5
-  // renamed it to `submittedAttachments`. Only empty arrays are exposed by
-  // the Remote bridge; command attachments are deliberately out of scope.
+  // renamed it to `submittedAttachments`. Current Hosts resolve opaque file
+  // receipts in the receiving Session; legacy image arguments stay empty.
   images: z.array(z.never()).length(0).optional(),
-  submittedAttachments: z.array(z.never()).length(0).optional(),
+  submittedAttachments: z.array(z.object({ type: z.literal('file'), receiptId: z.string().min(1).max(512) }).strict()).max(32).optional(),
 }).strict().superRefine((value, context) => {
   if (value.images !== undefined && value.submittedAttachments !== undefined) {
     context.addIssue({
@@ -109,6 +109,7 @@ const directoryListSchema = z.object({
 const MAX_ACTIVE_STREAMS = MAX_ALPHA_STREAMS_PER_CONNECTION
 const MAX_ACTIVE_TRANSFERS = MAX_ACTIVE_TRANSFERS_PER_DIRECTION
 const INLINE_TRANSFER_RESPONSE_BYTES = 2 * 1024 * 1024
+const EXTERNAL_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 
 /** Fixed v0.1.2 Typert Remote subset exposed to authenticated peers. */
 export const HARNESS_REMOTE_ALLOWLIST = [
@@ -158,6 +159,7 @@ export const HARNESS_REMOTE_ALLOWLIST = [
   'schedule/deliveryLimits',
   'schedule/edit',
   'schedule/run',
+  'fileUploads/upload',
   'session/attachment',
   'session/cancel',
   'session/canOpenWorkspacePath',
@@ -304,12 +306,18 @@ export class HarnessRemoteBridge {
     private readonly codexWorkspace?: CodexWorkspaceBridge,
     private readonly resolveWorkspaceRoot?: NativeWorkspaceResolver,
     private readonly schedule?: ScheduleCreateService,
+    private readonly uploadAttachment?: (body: unknown) => Promise<unknown>,
+    private readonly externalImageRoot?: { sessionId: string; path: string },
   ) {
     this.terminalCarrier = usesDuplexTerminal(harnessVersion) ? new TerminalCarrierCompat(gateway) : undefined
   }
 
   async call(input: unknown): Promise<TypertRpcResult> {
     const params = callSchema.parse(input) as HarnessRemoteCallParams
+    if ((params.endpoint === 'remoteUploads/upload' || params.endpoint === 'remoteImages/upload') && this.uploadAttachment !== undefined) {
+      const payload = z.object({ args: z.unknown() }).strict().parse(params.payload)
+      return { ok: true, value: await this.uploadAttachment(payload.args) }
+    }
     this.assertAllowed(params.endpoint)
     if (TERMINAL_STREAMS.has(params.endpoint)) throw new RpcError('METHOD_NOT_ALLOWED', 'Use a stream for this terminal endpoint.')
     if (['settings/update', 'settings/replace', 'settings/mutate'].includes(params.endpoint)) {
@@ -828,18 +836,19 @@ export class HarnessRemoteBridge {
       if (baseSegments.some(segment => segment === '..')) {
         throw workspaceFileFailure('WORKSPACE_PATH_DENIED', 'The requested workspace path is outside the workspace.', 'outside-root')
       }
-      const safeBaseRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, rawBaseFile, endpoint)
+      const safeBaseRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, rawBaseFile, endpoint, sessionWorkspace.cwd)
       const baseCandidate = resolve(sessionWorkspace.root, safeBaseRel)
       const baseDir = dirname(baseCandidate)
       const targetCandidate = resolve(baseDir, path)
-      safeRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, targetCandidate, endpoint)
+      safeRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, targetCandidate, endpoint, sessionWorkspace.cwd)
     } else {
       const path = typeof args.path === 'string' ? args.path : '.'
       const pathSegments = process.platform === 'win32' ? path.replaceAll('\\', '/').split('/') : path.split('/')
       if (pathSegments.some(segment => segment === '..')) {
         throw workspaceFileFailure('WORKSPACE_PATH_DENIED', 'The requested workspace path is outside the workspace.', 'outside-root')
       }
-      safeRel = await this.verifyWorkspacePathContainment(sessionWorkspace.root, path, endpoint)
+      safeRel = await this.resolveExternalImagePath(sessionId, path, endpoint)
+        ?? await this.verifyWorkspacePathContainment(sessionWorkspace.root, path, endpoint, sessionWorkspace.cwd)
     }
 
     let finalArgs: Record<string, unknown> = isRecord(rootPayload.args)
@@ -851,7 +860,14 @@ export class HarnessRemoteBridge {
       finalArgs.options = restOptions
     }
     delete finalArgs.baseFile
-    if (endpoint === 'workspaceFiles/readBytes') {
+    const wholeExternalImage = endpoint === 'workspaceFiles/readBytes' && isAbsolute(safeRel)
+      && !isRecord(finalArgs.range) && !(isRecord(finalArgs.options) && isRecord(finalArgs.options.range))
+      && !Object.hasOwn(finalArgs, 'offset') && !Object.hasOwn(finalArgs, 'length')
+    if (wholeExternalImage) {
+      if ((await stat(safeRel)).size > MAX_READ_BYTES) {
+        throw workspaceFileFailure('WORKSPACE_TOO_LARGE', 'The requested workspace file is too large.', 'too-large')
+      }
+    } else if (endpoint === 'workspaceFiles/readBytes') {
       const range = byteOrLineRange(finalArgs)
       const offset = typeof range.offset === 'number' && Number.isInteger(range.offset) && range.offset >= 0 ? range.offset : 0
       const rawLength = typeof range.length === 'number' && Number.isInteger(range.length) && range.length > 0 ? range.length : MAX_READ_BYTES
@@ -872,6 +888,34 @@ export class HarnessRemoteBridge {
       }
     }
     return isRecord(rootPayload.args) ? { ...rootPayload, args: finalArgs } : finalArgs
+  }
+
+  private async resolveExternalImagePath(sessionId: string, path: string, endpoint: string): Promise<string | undefined> {
+    const grant = this.externalImageRoot
+    if (grant?.sessionId !== sessionId || !isAbsolute(path)
+      || (endpoint !== 'workspaceFiles/stat' && endpoint !== 'workspaceFiles/readBytes')
+      || !EXTERNAL_IMAGE_EXTENSIONS.has(extname(path).toLowerCase())) return undefined
+
+    const root = await realpath(grant.path).catch(() => undefined)
+    if (root === undefined || (isPathOutside(relative(root, path)) && isPathOutside(relative(resolve(grant.path), path)))) {
+      return undefined
+    }
+    const safeRel = await this.verifyWorkspacePathContainment(root, path, endpoint, grant.path)
+    const absolutePath = resolve(root, safeRel)
+    if (!(await stat(absolutePath)).isFile()) {
+      throw workspaceFileFailure('WORKSPACE_PATH_DENIED', 'The requested workspace path is not a regular file.', 'not-regular-file')
+    }
+    const file = await open(absolutePath, 'r')
+    try {
+      const header = Buffer.alloc(12)
+      const { bytesRead } = await file.read(header, 0, header.length, 0)
+      if (!hasImageSignature(extname(absolutePath).toLowerCase(), header.subarray(0, bytesRead))) {
+        throw workspaceFileFailure('WORKSPACE_PATH_DENIED', 'The requested file is not an image.', 'not-regular-file')
+      }
+    } finally {
+      await file.close()
+    }
+    return absolutePath
   }
 
   private async resolveWorkspaceRootForSession(
@@ -909,8 +953,15 @@ export class HarnessRemoteBridge {
     root: string,
     path: string,
     endpoint: string,
+    cwd = root,
   ): Promise<string> {
-    const candidate = isAbsolute(path) ? resolve(path) : resolve(root, path)
+    const supplied = isAbsolute(path) ? resolve(path) : resolve(root, path)
+    const cwdRelative = relative(resolve(cwd), supplied)
+    // Only the Host-authorized cwd is an accepted alias for the canonical root.
+    // Do not realpath arbitrary inputs: internal symlinks must still be denied.
+    const candidate = isAbsolute(path) && !isPathOutside(cwdRelative)
+      ? resolve(root, cwdRelative)
+      : supplied
     if (process.platform === 'win32') {
       const rootDrive = parse(root).root.toLowerCase()
       const candDrive = parse(candidate).root.toLowerCase()
@@ -991,6 +1042,13 @@ export class HarnessRemoteBridge {
     }
   }
 
+}
+
+function hasImageSignature(extension: string, bytes: Buffer): boolean {
+  if (extension === '.png') return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  if (extension === '.jpg' || extension === '.jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  if (extension === '.gif') return bytes.subarray(0, 6).toString('ascii') === 'GIF87a' || bytes.subarray(0, 6).toString('ascii') === 'GIF89a'
+  return extension === '.webp' && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
 }
 
 function isPathOutside(rel: string): boolean {
@@ -1215,13 +1273,16 @@ function requiresWorkspaceChangePath(version: string | undefined): boolean {
     && ((Number(match[2]) === 1 && Number(match[3]) >= 7) || Number(match[2]) === 2)
 }
 
-async function dispatchCommandForHost(
+export async function dispatchCommandForHost(
   gateway: LocalTypertGateway,
   payload: unknown,
   signal: AbortSignal,
   harnessVersion?: string,
 ): Promise<TypertRpcResult> {
   const parsed = commandExecutePayloadSchema.parse(payload)
+  if (harnessSessionGeneration(harnessVersion) !== 'v3' && (parsed.args.submittedAttachments?.length ?? 0) > 0) {
+    throw new RpcError('METHOD_NOT_ALLOWED', 'This Host does not support command file receipts.')
+  }
   const legacyPayload = {
     args: {
       agentId: parsed.args.agentId,

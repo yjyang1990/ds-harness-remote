@@ -1,10 +1,9 @@
 import * as Haptics from 'expo-haptics'
-import { ArrowDown, ArrowLeft, FileText, ListTree, Menu, MessageSquare, RefreshCw, X } from 'lucide-react-native'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ArrowLeft, FileText, Film, ListTree, Menu, MessageSquare, RefreshCw, X } from 'lucide-react-native'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AccessibilityInfo,
   ActivityIndicator,
-  Alert,
   Animated,
   DeviceEventEmitter,
   Easing,
@@ -20,6 +19,7 @@ import {
   Text,
   View
 } from 'react-native'
+import { Alert } from '../ui/alert'
 import { shouldConfirmSwipeRightOpen, shouldStartSwipeRightToOpen } from '../lib/gesture-swipe-rules'
 import { isSubagentSession } from '../lib/session-kind'
 import { workspaceStableKey } from '../lib/workspace-key'
@@ -44,6 +44,7 @@ import { ChatImageProvider } from '../ui/chat-image'
 import { BlurHeaderFrame, IconButton, TopBar } from '../ui/components'
 import { KeyboardInset } from '../ui/keyboard-inset'
 import { decodeSessionMentionUri, markdownFilePath, MarkdownLinkProvider, openSafeExternalUrl } from '../ui/markdown'
+import { NavigationFocusProvider } from '../ui/mention-popover'
 import { OfficialMenuIcons } from '../ui/official-menu-icons'
 import { useResponsiveLayout } from '../ui/responsive'
 import { spacing } from '../ui/theme'
@@ -54,12 +55,16 @@ import { useReduceMotion } from '../ui/use-reduce-motion'
 import { AutomationTasksModal } from './automation-tasks-modal'
 import { ChatErrorBoundary } from './chat-error-boundary'
 import {
+  formatDurationMs,
   formatFileBytes,
   formatUploadedFilesPrompt,
   formatUploadedFilesReferencePrompt,
-  MAX_TOTAL_FILES_BYTES,
+  isDirectTransportMode,
+  isVideoFile,
   uploadStagedFilesToWorkspace,
-  type StagedFile
+  workspaceUploadMaxBytes,
+  type StagedFile,
+  type UploadProgress
 } from './chat-files'
 import { ChatTrajectory } from './chat-trajectory'
 import { ChatActionMenu } from './chat/action-menu'
@@ -97,8 +102,8 @@ import { useChatMentions } from './chat/use-chat-mentions'
 import { useChatPrompts } from './chat/use-chat-prompts'
 import { useChatScroll } from './chat/use-chat-scroll'
 import { useChatTranscript } from './chat/use-chat-transcript'
-import { useLiveSessionStatus } from './device-screens'
 import { BotModeScreen } from './bot-mode-screen'
+import { useLiveSessionStatus } from './device-screens'
 import { HostSessionsDrawer } from './host-sessions-drawer'
 import { PluginsModal } from './plugins-modal'
 import { ReferenceChatModal, ReferencedChatPills } from './bot/reference-chat-modal'
@@ -116,6 +121,8 @@ const EMPTY_UI_ARTIFACTS: UiArtifact[] = []
 const LONG_DRAFT_MAX = 256_000
 
 export function ChatScreen({
+  active = true,
+  suppressAutoSelect = false,
   onBack = () => {},
   onOpenDevices: _onOpenDevices,
   onNewSession,
@@ -130,6 +137,8 @@ export function ChatScreen({
   onBotModeChange,
   onSelectBot,
 }: {
+  active?: boolean
+  suppressAutoSelect?: boolean
   onBack?: () => void
   onOpenDevices?: () => void
   onNewSession?: () => void
@@ -145,10 +154,10 @@ export function ChatScreen({
   onSelectBot?: (id?: string) => void
 }) {
   const reduceMotion = useReduceMotion()
-  // New subagent children and running-state changes must reach `sessions`
-  // without leaving the chat (the list screens unmount here).
   const session = useAppStore(state => state.selectedSession)
   const archivedSessionIds = useAppStore(state => state.archivedSessionIds)
+  // Legacy Hosts keep the 8s poll; event-capable Hosts use `$events` + `session/control`.
+  // Keep this mounted in chat so subagent/running updates still arrive when list screens unmount.
   useLiveSessionStatus(!botMode && session !== undefined && (session.backend ?? 'harness') === 'harness')
   const hostId = useAppStore(state => state.selectedDevice?.deviceId)
   const hostPlatform = useAppStore(state => state.selectedDevice?.platform)
@@ -166,6 +175,7 @@ export function ChatScreen({
   const permissionSelecting = useAppStore(state => state.permissionSelecting)
   const sendMessage = useAppStore(state => state.sendMessage)
   const stopSession = useAppStore(state => state.stopSession)
+  const cancelCompaction = useAppStore(state => state.cancelCompaction)
   const reconnect = useAppStore(state => state.reconnect)
   const openSession = useAppStore(state => state.openSession)
   const respondApproval = useAppStore(state => state.respondApproval)
@@ -207,7 +217,12 @@ export function ChatScreen({
   // Enter-only motion for the transcript <-> trajectory swap. Both views keep
   // their own scroll state; only the incoming view moves.
   const trajectoryMotion = useRef(new Animated.Value(1)).current
+  const trajectoryMountedRef = useRef(false)
   useEffect(() => {
+    if (!trajectoryMountedRef.current) {
+      trajectoryMountedRef.current = true
+      return
+    }
     trajectoryMotion.setValue(0)
     const animation = Animated.timing(trajectoryMotion, {
       toValue: 1,
@@ -221,6 +236,8 @@ export function ChatScreen({
   const [composingDuringRun, setComposingDuringRun] = useState(false)
 
   const [sessionsOpen, setSessionsOpen] = useState(true)
+  const [drawerEntrance, setDrawerEntrance] = useState<'immediate' | 'slide'>('immediate')
+  const drawerBackRef = useRef<(() => boolean) | undefined>(undefined)
   // Cold start parks the sidebar full-screen before any page is chosen; swiping
   // or pressing back must not drop the user into an arbitrary conversation.
   const [drawerSwipeUnlocked, setDrawerSwipeUnlocked] = useState(false)
@@ -230,6 +247,7 @@ export function ChatScreen({
     if (hostId === lastHostIdRef.current) return
     lastHostIdRef.current = hostId
     setDrawerSwipeUnlocked(false)
+    setDrawerEntrance('immediate')
     setSessionsOpen(true)
   }, [hostId])
   // Explicit navigation must also reveal an already selected conversation.
@@ -293,6 +311,7 @@ export function ChatScreen({
   }, [setQuotes, composerInputRef])
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const [uploadingFiles, setUploadingFiles] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress>()
   const uploadingRef = useRef(false)
   const uploadControllerRef = useRef<AbortController | undefined>(undefined)
   const sessionGenerationRef = useRef(0)
@@ -304,6 +323,7 @@ export function ChatScreen({
         lastSessionId = currentId
         sessionGenerationRef.current += 1
         uploadControllerRef.current?.abort()
+        setUploadProgress(undefined)
         setStagedFiles([])
       }
     })
@@ -312,7 +332,7 @@ export function ChatScreen({
   useEffect(() => {
     if (connection.phase !== 'connected') uploadControllerRef.current?.abort()
   }, [connection.phase])
-  const { canAttachImages, attachmentPicking, pickImages, takePhoto, pickFiles } = useChatAttachments({
+  const { attachmentPicking, pickImages, takePhoto, pickFiles } = useChatAttachments({
     session, memoryKey, images, setImages, stagedFiles, setStagedFiles, sessionGenerationRef,
   })
   const [plusMenuOpen, setPlusMenuOpen] = useState(false)
@@ -395,6 +415,7 @@ export function ChatScreen({
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined)
     // Reached from a conversation, so the sidebar may be swiped away again.
     setDrawerSwipeUnlocked(true)
+    setDrawerEntrance('slide')
     setSessionsOpen(true)
   }, [setMentionType])
 
@@ -461,20 +482,24 @@ export function ChatScreen({
   // Back inside a subagent child returns to its parent conversation (the
   // official subagent UI's navigation), instead of leaving the chat entirely.
   const backFromChat = () => {
+    if (!tabletSplit && sessionsOpen) {
+      return drawerBackRef.current?.() ?? false
+    }
     const parent = session !== undefined && isSubagentSession(session)
       ? sessions.find(item => item.sessionId === session.parentSessionId)
       : undefined
     if (parent !== undefined) {
       Keyboard.dismiss()
       void openSession(parent)
-      return
+      return true
     }
     if (!tabletSplit && !sessionsOpen) {
       openSessionsDrawer()
-      return
+      return true
     }
     Keyboard.dismiss()
     onBack()
+    return true
   }
   const onBackRef = useRef(backFromChat)
   onBackRef.current = backFromChat
@@ -492,7 +517,7 @@ export function ChatScreen({
     { open: promptsPickerOpen, close: () => setPromptsPickerOpen(false) },
     { open: toolsMode !== undefined, close: () => { setToolsMode(undefined); setFileLinkPath(undefined) } },
     { open: trajectory, close: () => setTrajectory(false) },
-  ])
+  ], active)
 
   const botTeamState = useBotTeamStore(state => state.state)
 
@@ -534,14 +559,7 @@ export function ChatScreen({
     }
   }, [botMode, session, botTeamState, memoryScope])
 
-  const autoSelectingRef = useRef(false)
-  useEffect(() => {
-    if (botMode) return
-    const sessionIsBot = session !== undefined && isKnownBotSessionId(session.sessionId, botTeamState, memoryScope)
-    if (sessionIsBot) {
-      useAppStore.setState({ selectedSession: undefined })
-    }
-    if ((session !== undefined && !sessionIsBot) || busy !== undefined || autoSelectingRef.current) return
+  const findPreferredAgentSession = () => {
     const candidates = sessions.filter(
       item => !archivedSessionIds.includes(item.sessionId) && !isKnownBotSessionId(item.sessionId, botTeamState, memoryScope),
     )
@@ -549,19 +567,35 @@ export function ChatScreen({
     const preferred = remembered
       ? candidates.find(item => item.sessionId === remembered.sessionId && (item.backend ?? 'harness') === (remembered.backend ?? 'harness'))
       : undefined
-    const target = preferred ?? [...candidates].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+    return preferred ?? [...candidates].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+  }
+
+  const switchToAgentMode = () => {
+    const target = findPreferredAgentSession()
+    if (target !== undefined) {
+      void openSession(target)
+    } else if (session !== undefined && isKnownBotSessionId(session.sessionId, botTeamState, memoryScope)) {
+      useAppStore.setState({ selectedSession: undefined })
+    }
+    onBotModeChange?.(false)
+  }
+
+  const autoSelectingRef = useRef(false)
+  useEffect(() => {
+    if (botMode || suppressAutoSelect) return
+    const sessionIsBot = session !== undefined && isKnownBotSessionId(session.sessionId, botTeamState, memoryScope)
+    if (sessionIsBot) {
+      useAppStore.setState({ selectedSession: undefined })
+    }
+    if ((session !== undefined && !sessionIsBot) || busy !== undefined || autoSelectingRef.current) return
+    const target = findPreferredAgentSession()
     if (target) {
-      const capturedScope = memoryScope
       autoSelectingRef.current = true
       void openSession(target).finally(() => {
-        if (browseScope(useAppStore.getState()) === capturedScope) {
-          autoSelectingRef.current = false
-        } else {
-          autoSelectingRef.current = false
-        }
+        autoSelectingRef.current = false
       })
     }
-  }, [botMode, session, connected, busy, sessions, archivedSessionIds, openSession, botTeamState, memoryScope])
+  }, [botMode, suppressAutoSelect, session, connected, busy, sessions, archivedSessionIds, openSession, botTeamState, memoryScope])
 
   useEffect(() => {
     if (!replyActive) setComposingDuringRun(false)
@@ -572,6 +606,8 @@ export function ChatScreen({
       <HostSessionsDrawer
         key={inlineMode ? 'inline-navigation' : 'navigation-drawer'}
         inline={inlineMode}
+        entrance={inlineMode ? 'immediate' : drawerEntrance}
+        backRef={inlineMode ? undefined : drawerBackRef}
         botMode={botMode}
         onBotModeChange={onBotModeChange}
         dismissible={inlineMode || drawerSwipeUnlocked}
@@ -615,8 +651,8 @@ export function ChatScreen({
       }}
       onSelect={async next => {
         markConversationChosen()
-        onBotModeChange?.(false)
         const pending = openSession(next)
+        onBotModeChange?.(false)
         const visible = useAppStore.getState().selectedSession?.sessionId === next.sessionId
         if (!inlineMode && visible) {
           setSessionsOpen(false)
@@ -628,53 +664,79 @@ export function ChatScreen({
     />
   )
 
-  if (botMode) {
-    return (
-      <ChatImageProvider value={imageLoader}><MarkdownLinkProvider onLinkPress={openLink}><KeyboardInset>
-        <View key="chat-layout" style={[styles.splitRoot, tabletSplit && styles.splitRootWide]}>
-          {tabletSplit && <View style={styles.splitSidebar}>{drawerElement(true)}</View>}
-          <View style={styles.splitMain} {...swipeRightTouchProps}>
-            <BotModeScreen
-              selectedId={botConversationId}
-              onSelect={id => onSelectBot?.(id)}
-              onAgentMode={() => onBotModeChange?.(false)}
-              onOpenDrawer={openSessionsDrawer}
-              onDeviceInfo={() => onOpenDeviceInfo?.()}
-              onMore={() => onOpenSettings?.()}
-              splitView={tabletSplit}
-              drawerOpen={sessionsOpen || tabletSplit}
-            />
-          </View>
+  const defaultTaskWorkspaceId =
+    (session === undefined ? undefined : workspaces.find(w => w.sessionIds.includes(session.sessionId))?.workspaceId)
+    ?? workspaces[0]?.workspaceId
+
+  const wrapChatShell = (mainPane: ReactNode, extraOverlays?: ReactNode) => (
+    <ChatImageProvider value={imageLoader}>
+      <MarkdownLinkProvider onLinkPress={openLink}>
+        <View style={styles.flex}>
+          <NavigationFocusProvider value={active && (!sessionsOpen || tabletSplit) && !composerExpanded}>
+            <KeyboardInset>
+              <View
+                key="chat-layout"
+                style={[styles.splitRoot, tabletSplit && styles.splitRootWide]}
+                pointerEvents={sessionsOpen && !tabletSplit ? 'none' : 'auto'}
+                accessibilityElementsHidden={sessionsOpen && !tabletSplit}
+                importantForAccessibility={sessionsOpen && !tabletSplit ? 'no-hide-descendants' : 'auto'}
+              >
+                {tabletSplit && <View style={styles.splitSidebar}>{drawerElement(true)}</View>}
+                {mainPane}
+              </View>
+              {extraOverlays}
+            </KeyboardInset>
+          </NavigationFocusProvider>
+          {sessionsOpen && !tabletSplit && drawerElement(false)}
+          <PluginsModal visible={pluginsOpen} onClose={() => setPluginsOpen(false)} />
+          <AutomationTasksModal
+            visible={automationTasksOpen}
+            onClose={() => setAutomationTasksOpen(false)}
+            onOpenSession={async targetSession => {
+              markConversationChosen()
+              const opened = await openSession(targetSession)
+              onBotModeChange?.(false)
+              if (opened && !tabletSplit) setSessionsOpen(false)
+              setAutomationTasksOpen(false)
+            }}
+            onNewTask={async () => {
+              markConversationChosen()
+              const created = await createSession(defaultTaskWorkspaceId)
+              onBotModeChange?.(false)
+              if (created && !tabletSplit) setSessionsOpen(false)
+              setAutomationTasksOpen(false)
+            }}
+          />
         </View>
-        {sessionsOpen && !tabletSplit && drawerElement(false)}
-        <PluginsModal visible={pluginsOpen} onClose={() => setPluginsOpen(false)} />
-        <AutomationTasksModal
-          visible={automationTasksOpen}
-          onClose={() => setAutomationTasksOpen(false)}
-          onOpenSession={async targetSession => {
-            setAutomationTasksOpen(false)
-            markConversationChosen()
-            setSessionsOpen(false)
-            onBotModeChange?.(false)
-            await openSession(targetSession)
-          }}
-          onNewTask={async () => {
-            setAutomationTasksOpen(false)
-            markConversationChosen()
-            setSessionsOpen(false)
-            onBotModeChange?.(false)
-            await createSession(workspaces[0]?.workspaceId)
-          }}
+      </MarkdownLinkProvider>
+    </ChatImageProvider>
+  )
+
+  if (botMode) {
+    return wrapChatShell(
+      <View style={styles.splitMain} {...swipeRightTouchProps}>
+        <BotModeScreen
+          selectedId={botConversationId}
+          onSelect={id => onSelectBot?.(id)}
+          onAgentMode={switchToAgentMode}
+          onOpenDrawer={openSessionsDrawer}
+          onDeviceInfo={() => onOpenDeviceInfo?.()}
+          onMore={() => onOpenSettings?.()}
+          splitView={tabletSplit}
+          drawerOpen={sessionsOpen || tabletSplit}
+          screenActive={active && (!sessionsOpen || tabletSplit)}
         />
-      </KeyboardInset></MarkdownLinkProvider></ChatImageProvider>
+      </View>,
     )
   }
 
-  if (session === undefined) {
+  const sessionIsBot = session !== undefined && isKnownBotSessionId(session.sessionId, botTeamState, memoryScope)
+  if (session === undefined || sessionIsBot) {
     const emptyHeader = (
       <TopBar
         title={strings.chat.newChat}
         titleLines={1}
+        centered={connected ? 48 : 88}
         onBack={tabletSplit ? undefined : openSessionsDrawer}
         backIcon={Menu}
         backLabel={strings.chat.openHostSessions}
@@ -702,45 +764,22 @@ export function ChatScreen({
         }
       />
     )
-    return (
-      <ChatImageProvider value={imageLoader}><MarkdownLinkProvider onLinkPress={openLink}><KeyboardInset>
-        <View key="chat-layout" style={[styles.splitRoot, tabletSplit && styles.splitRootWide]}>
-          {tabletSplit && <View style={styles.splitSidebar}>{drawerElement(true)}</View>}
-          <View style={styles.splitMain} {...swipeRightTouchProps}>
-            <BlurHeaderFrame header={emptyHeader}>
-              {headerHeight => (
-                <View style={[styles.list, readableColumn, styles.emptyList, { paddingTop: headerHeight + spacing.xl }]}>
-                  {busy !== undefined ? (
-                    <View style={{ padding: spacing.xl, alignItems: 'center' }}>
-                      <ActivityIndicator size="large" color={colors.primary} />
-                    </View>
-                  ) : (
-                    <WelcomeMessage />
-                  )}
+    return wrapChatShell(
+      <View style={styles.splitMain} {...swipeRightTouchProps}>
+        <BlurHeaderFrame header={emptyHeader}>
+          {headerHeight => (
+            <View style={[styles.list, readableColumn, styles.emptyList, { paddingTop: headerHeight + spacing.xl }]}>
+              {busy !== undefined ? (
+                <View style={{ padding: spacing.xl, alignItems: 'center' }}>
+                  <ActivityIndicator size="large" color={colors.primary} />
                 </View>
+              ) : (
+                <WelcomeMessage />
               )}
-            </BlurHeaderFrame>
-          </View>
-        </View>
-        {sessionsOpen && !tabletSplit && drawerElement(false)}
-        <PluginsModal visible={pluginsOpen} onClose={() => setPluginsOpen(false)} />
-        <AutomationTasksModal
-          visible={automationTasksOpen}
-          onClose={() => setAutomationTasksOpen(false)}
-          onOpenSession={async targetSession => {
-            setAutomationTasksOpen(false)
-            markConversationChosen()
-            setSessionsOpen(false)
-            await openSession(targetSession)
-          }}
-          onNewTask={async () => {
-            setAutomationTasksOpen(false)
-            markConversationChosen()
-            setSessionsOpen(false)
-            await createSession(workspaces[0]?.workspaceId)
-          }}
-        />
-      </KeyboardInset></MarkdownLinkProvider></ChatImageProvider>
+            </View>
+          )}
+        </BlurHeaderFrame>
+      </View>,
     )
   }
 
@@ -773,14 +812,51 @@ export function ChatScreen({
     const targetSessionId = session.sessionId
     const sendSessionGen = sessionGenerationRef.current
     if (submittedFiles.length > 0) {
+      const transportModeAtStart = useAppStore.getState().connection.stats.mode
+      const maxBytesAtStart = workspaceUploadMaxBytes(transportModeAtStart)
+      const oversizedFile = submittedFiles.find(
+        file => !(typeof file.remotePath === 'string' && file.remotePath.trim().length > 0)
+          && typeof file.content !== 'string'
+          && file.size > maxBytesAtStart,
+      )
+      if (oversizedFile) {
+        Alert.alert(
+          strings.messageActions.failed,
+          strings.chat.fileTooLargeForTransport(
+            oversizedFile.name,
+            formatFileBytes(maxBytesAtStart),
+            isDirectTransportMode(transportModeAtStart),
+          ),
+        )
+        return
+      }
+      let failingFile: StagedFile | undefined = submittedFiles[0]
       const controller = new AbortController()
       uploadControllerRef.current?.abort()
       uploadControllerRef.current = controller
       uploadingRef.current = true
       setUploadingFiles(true)
+      setUploadProgress({
+        fileIndex: 0,
+        fileCount: submittedFiles.length,
+        fileName: submittedFiles[0]?.name ?? '',
+        bytesSent: 0,
+        totalBytes: submittedFiles[0]?.size ?? 0,
+      })
       try {
         const rpc = requireConnectionRpc()
-        const uploaded = await uploadStagedFilesToWorkspace(rpc, session.sessionId, submittedFiles, controller.signal)
+        const uploaded = await uploadStagedFilesToWorkspace(
+          rpc,
+          session.sessionId,
+          submittedFiles,
+          controller.signal,
+          progress => {
+            failingFile = submittedFiles[progress.fileIndex] ?? failingFile
+            if (!controller.signal.aborted && uploadControllerRef.current === controller) {
+              setUploadProgress(progress)
+            }
+          },
+        )
         // A navigation, session switch, reconnection or unmount during a long
         // upload must never leak the prompt into another conversation.
         if (controller.signal.aborted) return
@@ -795,10 +871,23 @@ export function ChatScreen({
         // Aborted uploads already restored (or discarded) their composer state;
         // do not surface a cancellation as a failure.
         if (controller.signal.aborted || (uploadError as Error | undefined)?.name === 'AbortError') return
-        const isUnsupported = (uploadError as { code?: string })?.code === 'FEATURE_NOT_SUPPORTED'
-        const errorMsg = isUnsupported
-          ? strings.chat.uploadUnavailable
-          : strings.chat.uploadFileFailed(submittedFiles[0]?.name ?? '', (uploadError as Error).message)
+        const code = (uploadError as { code?: string })?.code
+        const activeFile = failingFile ?? submittedFiles[0]
+        const activeName = activeFile?.name ?? ''
+        const transportMode = useAppStore.getState().connection.stats.mode
+        const maxTransportBytes = workspaceUploadMaxBytes(transportMode)
+        let errorMsg: string
+        if (code === 'FEATURE_NOT_SUPPORTED' || code === 'UPLOAD_WORKSPACE_UNAVAILABLE') {
+          errorMsg = strings.chat.uploadUnavailable
+        } else if (code === 'UPLOAD_LIMIT' && (activeFile?.size ?? 0) > maxTransportBytes) {
+          errorMsg = strings.chat.fileTooLargeForTransport(
+            activeName,
+            formatFileBytes(maxTransportBytes),
+            isDirectTransportMode(transportMode),
+          )
+        } else {
+          errorMsg = strings.chat.uploadFileFailed(activeName, (uploadError as Error).message)
+        }
         Alert.alert(strings.messageActions.failed, errorMsg)
         return
       } finally {
@@ -806,6 +895,7 @@ export function ChatScreen({
           uploadControllerRef.current = undefined
           uploadingRef.current = false
           setUploadingFiles(false)
+          setUploadProgress(undefined)
         }
       }
     }
@@ -833,15 +923,14 @@ export function ChatScreen({
         setImages(previous => previous.length === 0 ? submittedImages : [...submittedImages, ...previous])
         setStagedReferences(previous => previous.length === 0 ? submittedReferences : [...submittedReferences, ...previous])
         setStagedFiles(current => {
-          const combined = [...submittedFiles, ...current]
-          let acc = 0
-          return combined.filter(f => {
-            if (acc + f.size <= MAX_TOTAL_FILES_BYTES) {
-              acc += f.size
-              return true
-            }
-            return false
-          })
+          const seen = new Set<string>()
+          const restored: StagedFile[] = []
+          for (const f of [...submittedFiles, ...current]) {
+            if (seen.has(f.id)) continue
+            seen.add(f.id)
+            restored.push(f)
+          }
+          return restored
         })
       }
       Alert.alert(strings.messageActions.failed, useAppStore.getState().error ?? strings.messageActions.unavailable)
@@ -933,6 +1022,13 @@ export function ChatScreen({
   const hasComposerContent = draft.trim().length > 0 || quotes.length > 0 || images.length > 0 || stagedFiles.length > 0 || stagedReferences.length > 0
   const compactRunning = replyActive && !hasComposerContent && !composingDuringRun
   const stopping = busy === 'stop-session'
+  const commandRunning = busy === 'command'
+  const stopOrCancel = () => {
+    if (!commandRunning) { void stopSession(); return }
+    // A tracked /compact can run for minutes; the stop control asks the Host to
+    // cancel it and keeps observing the confirmed terminal state.
+    void cancelCompaction().then(cancelled => { if (!cancelled) void stopSession() })
+  }
   // Action entries (attachments, tools, prompts) still need the channel, but the
   // text field itself only blocks on composer-local states so an offline draft
   // can be typed, edited and kept for the manual send after reconnection.
@@ -1030,7 +1126,7 @@ export function ChatScreen({
     }
     // A blank conversation carries nothing to lose: recreate it inside the
     // chosen workspace and archive the old placeholder so it reads as a move.
-    if (sessionBlank) await archiveSession(previousId)
+    if (sessionBlank && useAppStore.getState().selectedSession?.sessionId !== previousId) await archiveSession(previousId)
   }
 
   const pickWorkspace = (workspace: WorkspaceView) => {
@@ -1074,6 +1170,7 @@ export function ChatScreen({
         title={sessionTitle(session)}
         onTitlePress={() => { Keyboard.dismiss(); setMentionType(null); setSessionInfoOpen(true) }}
         titleLines={1}
+        centered={88}
         onBack={tabletSplit ? undefined : trajectory ? handleBack : openSessionsDrawer}
         backIcon={trajectory ? ArrowLeft : Menu}
         backLabel={trajectory ? strings.common.back : strings.chat.openHostSessions}
@@ -1081,7 +1178,7 @@ export function ChatScreen({
           <IconButton label={trajectory ? strings.trajectory.close : strings.trajectory.open}
             icon={trajectory ? MessageSquare : ListTree} dense tint={trajectory ? colors.primary : undefined}
             onPress={() => { Keyboard.dismiss(); setMentionType(null); setTrajectory(value => !value) }} />
-          <IconButton label={strings.chat.newChat} icon={OfficialMenuIcons.newChat} dense onPress={() => void startNewSession()} disabled={newSessionPending || busy !== undefined} />
+          <IconButton label={strings.chat.newChat} icon={OfficialMenuIcons.newChat} dense onPress={() => void startNewSession()} disabled={(sessionBlank && !hasComposerContent) || newSessionPending || busy !== undefined} />
         </>}
       />
       {!connected && (
@@ -1091,30 +1188,23 @@ export function ChatScreen({
           accessibilityLiveRegion="polite" disabled={connectionRetrying}
           onPress={() => void reconnectCurrentSession()}>
           <View style={styles.connectionDot} />
-          <Text style={styles.connectionBannerText}>
+          <Text style={styles.connectionBannerText} numberOfLines={1}>
             {connectionRetrying ? <>{strings.chat.reconnecting.replace(/…$/, '')}<AnimatedEllipsis /></> : strings.chat.offline}
           </Text>
         </Pressable>
       )}
       {connected && busy === `session:${session.sessionId}` && (
-        <View style={styles.connectionBanner} accessibilityRole="summary">
-          <View style={[styles.connectionDot, { backgroundColor: colors.primary }]} />
-          <Text style={styles.connectionBannerText}>
+        <View style={styles.syncBanner} accessibilityRole="summary">
+          <ActivityIndicator size="small" color={colors.primary} style={{ transform: [{ scale: 0.7 }] }} />
+          <Text style={styles.connectionBannerText} numberOfLines={1}>
             {strings.chat.syncingHistory}
           </Text>
         </View>
       )}
     </>
-  return (
-    <ChatImageProvider value={imageLoader}><MarkdownLinkProvider onLinkPress={openLink}><KeyboardInset>
+  return wrapChatShell(
+    <View style={styles.splitMain} {...swipeRightTouchProps}>
       {memoryError !== undefined && <Text accessibilityRole="alert" style={{color: colors.danger, padding: 8}}>{memoryError}</Text>}
-      <View key="chat-layout" style={[styles.splitRoot, tabletSplit && styles.splitRootWide]}>
-        {tabletSplit && (
-          <View style={styles.splitSidebar}>
-            {drawerElement(true)}
-          </View>
-        )}
-        <View style={styles.splitMain} {...swipeRightTouchProps}>
       {/* Messages scroll beneath the frosted header; the trajectory view keeps its own fixed search bar below it. */}
       <BlurHeaderFrame header={header} inset={trajectory}>{headerHeight => <ChatErrorBoundary key={session.sessionId} resetKey={session.sessionId}><Animated.View style={[{ flex: 1 }, { opacity: trajectoryMotion, transform: [{ translateY: trajectoryMotion.interpolate({ inputRange: [0, 1], outputRange: [resolveMotion('fullscreen', reduceMotion).translate, 0] }) }] }]}>{trajectory ? <ChatTrajectory key={session.sessionId} items={messages} renderImages={images => <ChatImages images={images} />} hasMore={historyHasMore} loading={historyLoadingOlder} loadOlder={() => void loadOlderHistory()} renderItem={item => <ChatItemView item={item} compact={false} busyAction={busy} onApproval={respondApproval} onQuestion={respondQuestion} />} /> : <>
         <FlatList
@@ -1222,30 +1312,53 @@ export function ChatScreen({
         )}
         {stagedFiles.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.fileTray}>
-            {stagedFiles.map((file, index) => (
-              <View key={`${file.id}:${index}`} style={styles.fileCard}>
-                <FileText size={16} color={colors.primary} />
-                <View style={styles.fileCardMeta}>
-                  <Text style={styles.fileCardName} numberOfLines={1}>{file.name}</Text>
-                  <Text style={styles.fileCardSize}>{formatFileBytes(file.size)}</Text>
+            {stagedFiles.map((file, index) => {
+              const video = isVideoFile(file.name, file.mimeType)
+              const sizeLine = file.durationMs !== undefined
+                ? `${formatFileBytes(file.size)} · ${formatDurationMs(file.durationMs)}`
+                : formatFileBytes(file.size)
+              return (
+                <View key={`${file.id}:${index}`} style={styles.fileCard}>
+                  {video ? <Film size={16} color={colors.primary} /> : <FileText size={16} color={colors.primary} />}
+                  <View style={styles.fileCardMeta}>
+                    <Text style={styles.fileCardName} numberOfLines={1}>{file.name}</Text>
+                    <Text style={styles.fileCardSize}>{sizeLine}</Text>
+                  </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={file.name ? strings.chat.removeFile(file.name) : strings.chat.unnamedFile}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    onPress={() => setStagedFiles(current => current.filter((_, fileIndex) => fileIndex !== index))}
+                    style={styles.removeFileButton}
+                  >
+                    <X size={13} color={colors.muted} />
+                  </Pressable>
                 </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={file.name ? `移除文件“${file.name}”` : '移除文件'}
-                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                  onPress={() => setStagedFiles(current => current.filter((_, fileIndex) => fileIndex !== index))}
-                  style={styles.removeFileButton}
-                >
-                  <X size={13} color={colors.muted} />
-                </Pressable>
-              </View>
-            ))}
+              )
+            })}
           </ScrollView>
         )}
         {uploadingFiles && (
-          <Text style={[styles.fileCardSize, { paddingHorizontal: spacing.md, paddingBottom: spacing.xs }]}>
-            {strings.chat.uploadingFile(stagedFiles[0]?.name ?? '')}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingBottom: spacing.xs, gap: spacing.sm }}>
+            <Text style={[styles.fileCardSize, { flexShrink: 1 }]} numberOfLines={1}>
+              {uploadProgress && uploadProgress.totalBytes > 0
+                ? strings.chat.uploadingFileProgress(
+                    uploadProgress.fileCount > 1
+                      ? `(${uploadProgress.fileIndex + 1}/${uploadProgress.fileCount}) ${uploadProgress.fileName}`
+                      : uploadProgress.fileName,
+                    Math.min(100, Math.round((uploadProgress.bytesSent / uploadProgress.totalBytes) * 100)),
+                  )
+                : strings.chat.uploadingFile(uploadProgress?.fileName ?? stagedFiles[0]?.name ?? '')}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={strings.chat.cancelUpload}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              onPress={() => uploadControllerRef.current?.abort()}
+            >
+              <Text style={[styles.fileCardSize, { color: colors.primary, fontWeight: '600' }]}>{strings.chat.cancelUpload}</Text>
+            </Pressable>
+          </View>
         )}
         <ReferencedChatPills
           items={stagedReferences}
@@ -1254,7 +1367,7 @@ export function ChatScreen({
         <ChatComposer
           backend={session.backend} draft={draft} input={mentionInput}
           quotes={quotes} onRemoveQuote={index => setQuotes(current => current.filter((_, i) => i !== index))}
-          replyActive={replyActive} stopping={stopping} compactRunning={compactRunning}
+          replyActive={replyActive} stopping={stopping} compactRunning={compactRunning} commandRunning={commandRunning}
           hasComposerContent={hasComposerContent} connected={connected} editable={inputEditable}
           composerDisabled={composerDisabled} sendDisabled={sendDisabled}
           compactComposer={compactComposer} composerInputMaxHeight={composerInputMaxHeight}
@@ -1262,7 +1375,7 @@ export function ChatScreen({
           promptsPickerOpen={promptsPickerOpen} onExpand={() => setComposingDuringRun(true)}
           onOpenExpand={() => setComposerExpanded(true)}
           onOpenActions={openPlusMenu} onOpenPrompts={openPromptsPicker}
-          onSubmit={() => void submit()} onStop={() => void stopSession()}
+          onSubmit={() => void submit()} onStop={stopOrCancel}
         />
         </View>
       </View>
@@ -1278,14 +1391,14 @@ export function ChatScreen({
         stopping={stopping}
         sendDisabled={sendDisabled}
         onSubmit={() => void submit()}
-        onStop={() => void stopSession()}
+        onStop={stopOrCancel}
       />
-        </View>
-      </View>
+        </View>,
+    <>
 
       <ChatActionMenu
         visible={plusMenuOpen} onClose={closePlusMenu} anchor={sheetAnchor}
-        canAttachImages={canAttachImages} attachmentPicking={attachmentPicking}
+        attachmentPicking={attachmentPicking}
         takePhoto={takePhoto} pickImages={pickImages} pickFiles={pickFiles}
         workspaceLabel={workspaceLabel} modeLabel={modeLabel}
         supportsModeSelection={supportsModeSelection} agentPresetSelecting={agentPresetSelecting}
@@ -1341,7 +1454,6 @@ export function ChatScreen({
           else openSessionsDrawer()
         }}
       />
-      {sessionsOpen && !tabletSplit && drawerElement(false)}
       <WorkspacePicker visible={workspacePickerOpen} workspaces={workspaces} currentSessionId={session.sessionId} sessionBackend={session.backend} busy={busy} onClose={() => setWorkspacePickerOpen(false)} onPick={pickWorkspace} onManage={() => { setWorkspacePickerOpen(false); openSessionsDrawer() }} />
       <ToolAccessPicker visible={toolPickerOpen} onClose={() => setToolPickerOpen(false)} onPick={pickToolMode} />
       <PromptsPicker
@@ -1404,20 +1516,7 @@ export function ChatScreen({
           </Pressable>
         </View>
       </Modal>
-      <PluginsModal visible={pluginsOpen} onClose={() => setPluginsOpen(false)} />
-      <AutomationTasksModal
-        visible={automationTasksOpen}
-        onClose={() => setAutomationTasksOpen(false)}
-        onOpenSession={async targetSession => {
-          setAutomationTasksOpen(false)
-          await openSession(targetSession)
-        }}
-        onNewTask={async () => {
-          setAutomationTasksOpen(false)
-          await createSession(currentWorkspace?.workspaceId)
-        }}
-      />
-    </KeyboardInset></MarkdownLinkProvider></ChatImageProvider>
+    </>,
   )
 }
 
