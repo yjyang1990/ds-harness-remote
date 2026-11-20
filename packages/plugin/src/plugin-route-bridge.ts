@@ -4,8 +4,13 @@ import { z } from 'zod'
 import type { SafeLogger } from './logging.js'
 import { RpcError } from './safe-error.js'
 
-/** Local plugin web routes forwardable over the authenticated channel (POST only). */
-export const PLUGIN_ROUTE_ALLOWLIST = ['api/bot', 'api/session/uploadFileBinary', 'api/dsh-input-prediction'] as const
+/** Local plugin web routes forwardable over the authenticated channel. */
+export const PLUGIN_ROUTE_ALLOWLIST = [
+  'api/bot',
+  'api/session/uploadFileBinary',
+  'api/dsh-input-prediction',
+  'api/dsh-input-prediction/session-setting',
+] as const
 
 /** DS-Bot v0.3.8 channel + computer endpoints; unknown future operations stay local. */
 export const BOT_REMOTE_OPERATIONS = [
@@ -58,6 +63,10 @@ export type PluginRouteDispatcher = (
   signal: AbortSignal,
 ) => Promise<{ status: number; json: unknown }>
 
+// Same backend namespaces as workspace-upload-authority; prediction is Harness-only.
+const predictionSessionId = z.string().min(1).max(256).refine(value => value.trim() === value && value.trim().length > 0)
+  .refine(value => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value))
+
 const callSchema = z.discriminatedUnion('route', [
   z.object({
     route: z.literal('api/bot'),
@@ -69,9 +78,14 @@ const callSchema = z.discriminatedUnion('route', [
   z.object({
     route: z.literal('api/dsh-input-prediction'),
     body: z.object({
-      sessionId: z.string().min(1).max(256).refine(value => value.trim() === value && value.trim().length > 0)
-        // Same backend namespaces as workspace-upload-authority; prediction is Harness-only.
-        .refine(value => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value)),
+      sessionId: predictionSessionId,
+    }).strict(),
+  }).strict(),
+  z.object({
+    route: z.literal('api/dsh-input-prediction/session-setting'),
+    body: z.object({
+      sessionId: predictionSessionId,
+      enabled: z.boolean().optional(),
     }).strict(),
   }).strict(),
 ])
@@ -96,8 +110,8 @@ const imageUploadCallSchema = z.object({
 const PLUGIN_ROUTE_TIMEOUT_MS = 30_000
 
 /**
- * Forwards bounded POST calls to local plugin web routes (first case: ds-bot's
- * `api/bot`) through the shared fetch handler of the Host connection service.
+ * Forwards bounded calls to local plugin web routes through the shared fetch
+ * handler of the Host connection service.
  * The route allowlist and both size bounds keep the tunnel fail-closed.
  */
 export class PluginRouteBridge {

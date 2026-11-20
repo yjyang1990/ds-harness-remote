@@ -65,6 +65,59 @@ describe('Host plugin route carrier', () => {
     }
   })
 
+  it('dispatches prediction setting reads and writes through the fixed authenticated Fetch route', async () => {
+    const ctx = new Context()
+    try {
+      await ctx.plugin(owner => { new HostConnectionService(owner, [], {} as never) }).await()
+      const connection = ctx.get('connection') as HostConnectionService
+      const route = 'api/dsh-input-prediction/session-setting'
+      const sessionId = 'session&enabled=true/#?雪'
+      const readResult = { enabled: true, forceEnabled: false, globalEnabled: true }
+      const read = vi.fn(async (request: Request) => {
+        expect(request.method).toBe('GET')
+        const url = new URL(request.url)
+        expect(url.pathname).toBe(`/${route}`)
+        expect([...url.searchParams]).toEqual([['sessionId', sessionId]])
+        expect(request.body).toBeNull()
+        return Response.json(readResult)
+      })
+      const write = vi.fn(async (request: Request) => {
+        expect(request.method).toBe('POST')
+        const url = new URL(request.url)
+        expect(url.pathname).toBe(`/${route}`)
+        expect(url.search).toBe('')
+        expect(request.headers.get('content-type')).toBe('application/json')
+        const body = await request.json()
+        expect(body).toEqual({ sessionId, enabled: expect.any(Boolean) })
+        return Response.json({ enabled: body.enabled, forceEnabled: false })
+      })
+      const unregister = connection.fetch.register({
+        path: `/${route}`, methods: ['GET', 'POST'], requestBody: 'buffered',
+        fetch: request => request.method === 'GET' ? read(request) : write(request),
+      })
+      const readPort = vi.fn(() => undefined)
+      const bridge = new PluginRouteBridge(createPluginRouteDispatcher(() => connection, readPort, connection.createPeer({ principal: { kind: 'owner' } })))
+      const router = new RpcRouter(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, bridge)
+      const call = (body: { sessionId: string; enabled?: boolean }) => router.handle(createRpcRequest('plugin.route.call', { route, body }))
+      const scenarios = [
+        { name: 'read', body: { sessionId }, result: { status: 200, json: readResult } },
+        ...[false, true].map(enabled => ({
+          name: enabled ? 'enable' : 'disable', body: { sessionId, enabled }, result: { status: 200, json: { enabled, forceEnabled: false } },
+        })),
+      ]
+      await runScenarios(scenarios.map(({ name, body, result }) => ({ name, run: async () => {
+        await expect(call(body)).resolves.toMatchObject({ type: 'rpc.response', payload: { result } })
+      } })))
+      await unregister()
+      await expect(call({ sessionId })).resolves.toMatchObject({ type: 'rpc.response', payload: { result: { status: 404, json: 'not found' } } })
+      expect(read).toHaveBeenCalledOnce()
+      expect(write).toHaveBeenCalledTimes(2)
+      expect(readPort).not.toHaveBeenCalled()
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('never forwards official Harness RPCs to the shared Connection interceptor', async () => {
     const ctx = new Context()
     try {

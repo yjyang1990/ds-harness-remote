@@ -825,8 +825,9 @@ Host 必须启用对应官方插件，原生 Gateway 的不可用或翻译失败
 
 `plugin.route.call`（capability `plugin.route.v1`）把 Host 本机其他 DSH 插件的 HTTP 路由
 通过认证业务通道转发给远程 Client。Host 路由白名单精确包含 `api/bot`、
-`api/session/uploadFileBinary` 与 `api/dsh-input-prediction`；其他路径、路径规范化变体
-及 query 均以 `INVALID_MESSAGE` 拒绝，不进入本机 Connection handler。不得通过该入口
+`api/session/uploadFileBinary`、`api/dsh-input-prediction` 与
+`api/dsh-input-prediction/session-setting`。其他路径、路径规范化变体及客户端提供的 query
+均以 `INVALID_MESSAGE` 拒绝，不进入本机 Connection handler。不得通过该入口
 绕过 Harness Remote allowlist、Remote 设置限制或终端归属与输入权校验。
 
 `api/bot` 的 `body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON 对象或 `null`
@@ -834,7 +835,7 @@ Host 必须启用对应官方插件，原生 Gateway 的不可用或翻译失败
 执行编译期固定操作白名单，新增上游操作默认拒绝。官方上传路径保持独立的 image/file
 严格 schema，只有经过 transfer 重组的上传请求使用 `MAX_HARNESS_API_TRANSFER_BYTES`
 请求上限；Bot 与预测请求及所有响应仍受 `MAX_SECURE_MESSAGE_BYTES` 限制。
-`api/dsh-input-prediction` 使用下述独立只读 schema，不接受 Bot 或上传字段。
+输入预测的两个路由使用下述独立 schema，不接受 Bot 或上传字段。
 
 2026-11-18 对齐 [DS-Bot v0.3.8](https://github.com/Fei2411/DS-Bot/tree/v0.3.8)：
 完整暴露其 `channel.js` 的命名 endpoint 与 `computer/index.js` 的 `computer-*` endpoint，
@@ -957,9 +958,33 @@ none/pending、插件缺失的 HTTP 404、carrier 不可用的 503 及查询错�
 POST 是只读快照查询，不会触发预测或消耗/删除建议；重复读取保留同一完成事件标识。
 返回沿用桥接的 30 秒预算和请求/响应大小上限，HTTP 状态与 JSON 原样保留。
 
-本轮仅增加预测的原生客户端 RPC 接入，Desktop/Web 的 DS-Bot fetch 兼容入口与独立的
-官方上传入口保持原有行为，不自动接管输入预测请求。客户端的轮询、会话切换及草稿采用由各端实现；
-采用操作只填入草稿，发送仍需用户触发。
+Desktop/Web 的 DS-Bot fetch 兼容入口与独立的官方上传入口不自动接管输入预测请求。
+客户端的轮询、会话切换及草稿采用由各端实现。采用操作只填入草稿，发送仍需用户触发。
+
+#### Harness 输入预测会话设置
+
+Host 提供本机插件路由 dispatcher 时同时宣告 `plugin.input-prediction-setting.v1`。
+该 capability 表示 Host 支持以下桥接契约。插件未安装或路由未注册时，返回普通 HTTP 404
+envelope。Client 仅对当前 Harness 会话且 Host 宣告该 capability 时调用。
+
+```json
+{
+  "method": "plugin.route.call",
+  "params": {
+    "route": "api/dsh-input-prediction/session-setting",
+    "body": { "sessionId": "native-harness-session-id", "enabled": false }
+  }
+}
+```
+
+外层仅接受 `route` 与 `body`。`body` 仅接受 `sessionId` 和可选布尔值 `enabled`，
+`sessionId` 与只读结果路由使用相同的长度、空白和虚拟会话命名空间校验。Host 通过既有的认证
+carrier 调用 `/api/dsh-input-prediction/session-setting`。省略 `enabled` 时，Host 发送无请求体的
+GET，并用 `URLSearchParams` 编码唯一的查询参数 `sessionId`。成功 JSON 为
+`{ enabled, forceEnabled, globalEnabled }`。显式传入 `true` 或 `false` 时，Host 发送 POST，
+以 JSON 传递 `{ sessionId, enabled }`，成功 JSON 为 `{ enabled, forceEnabled }`。
+Client 无权选择本机 HTTP 方法或 URL。设置写入由输入预测插件处理，Remote 继续按原样返回
+HTTP 状态和 JSON，不重放写请求。该映射沿用 `dsh-input-prediction` v0.1.5 的 Desktop 契约。
 
 ## 17. Capability
 

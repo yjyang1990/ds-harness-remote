@@ -1,7 +1,7 @@
 import { MAX_SECURE_MESSAGE_BYTES } from '@dsh-remote/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import type { PluginRouteDispatcher } from '../src/plugin-route-bridge.js'
-import { PluginRouteBridge } from '../src/plugin-route-bridge.js'
+import { isAllowedPluginRoute, PluginRouteBridge } from '../src/plugin-route-bridge.js'
 import upstreamEndpoints from './fixtures/ds-bot-v0.3.8-endpoints.json' with { type: 'json' }
 import { RpcError } from '../src/rpc-router.js'
 import { runScenarios } from '../../../scripts/test-scenarios.mjs'
@@ -28,7 +28,8 @@ describe('PluginRouteBridge', () => {
         undefined, null, [], 'session-1', {}, { sessionId: 1 }, { sessionId: '' },
         { sessionId: ' ' }, { sessionId: ' session-1' }, { sessionId: 'session-1\n' },
         { sessionId: 'x'.repeat(257) }, { sessionId: 'session-1', endpoint: 'generate' },
-        { sessionId: 'session-1', backend: 'harness' }, { endpoint: 'state', payload: null },
+        { sessionId: 'session-1', backend: 'harness' }, { sessionId: 'session-1', enabled: false },
+        { endpoint: 'state', payload: null },
         ...['codex', 'acp', 'cursor', 'pi', 'opencode', 'claude', 'hermes'].map(backend => ({ sessionId: `${backend}:session-1` })),
       ].map(body => ({ name: `invalid ${JSON.stringify(body)}`, body, allowed: false })),
     ].map(row => ({ name: row.name, run: async () => {
@@ -53,6 +54,40 @@ describe('PluginRouteBridge', () => {
     expect(dispatch).not.toHaveBeenCalled()
   })
 
+  it('allows only a native session ID and optional boolean for prediction settings', async () => {
+    const route = 'api/dsh-input-prediction/session-setting'
+    expect(isAllowedPluginRoute(route)).toBe(true)
+    const sessionId = 'session-1'
+    const body = { sessionId }
+    const dispatch = dispatcher()
+    const bridge = new PluginRouteBridge(dispatch)
+    await runScenarios([
+      { name: 'read', input: { route, body }, allowed: true },
+      { name: 'enable', input: { route, body: { sessionId, enabled: true } }, allowed: true },
+      { name: 'disable', input: { route, body: { sessionId, enabled: false } }, allowed: true },
+      ...[
+        undefined, null, [], sessionId, {}, { sessionId: 1 }, { sessionId: '' }, { sessionId: ' ' },
+        { sessionId: ' session-1' }, { sessionId: 'session-1\n' }, { sessionId: 'x'.repeat(257) },
+        ...['codex', 'acp', 'cursor', 'pi', 'opencode', 'claude', 'hermes'].map(backend => ({ sessionId: `${backend}:session-1` })),
+        ...[null, 0, 'false'].map(enabled => ({ sessionId, enabled })),
+        ...[{ method: 'POST' }, { url: '/api/bot' }, { query: 'sessionId=s' }, { backend: 'harness' }].map(extra => ({ sessionId, ...extra })),
+      ].map(body => ({ name: `invalid body ${JSON.stringify(body)}`, input: { route, body }, allowed: false })),
+      ...[{ method: 'POST' }, { url: '/api/bot' }].map(extra => ({
+        name: `invalid envelope ${JSON.stringify(extra)}`, input: { route, body, ...extra }, allowed: false,
+      })),
+    ].map(({ name, input, allowed }) => ({ name, run: async () => {
+      vi.mocked(dispatch).mockClear()
+      if (allowed) {
+        await expect(bridge.call(input)).resolves.toMatchObject({ status: 200 })
+        expect(dispatch).toHaveBeenCalledOnce()
+        expect(dispatch).toHaveBeenCalledWith(route, input.body, expect.any(AbortSignal))
+      } else {
+        await expect(bridge.call(input)).rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
+        expect(dispatch).not.toHaveBeenCalled()
+      }
+    } })))
+  })
+
   it('rejects routes outside the exact plugin allowlist before dispatch', async () => {
     await runScenarios([
       'http://evil/api/bot', '../etc/passwd', '', `api/${'x'.repeat(65)}`,
@@ -60,12 +95,16 @@ describe('PluginRouteBridge', () => {
       'api/../ds-harness-remote/host.logout', 'api/./bot', 'api/other/../bot',
       'api/%62ot', 'api/bot\n', '/api/dsh-input-prediction', 'api/dsh-input-prediction?sessionId=s',
       'api/dsh-input-prediction/generate', 'api/./dsh-input-prediction', 'api/%64sh-input-prediction',
+      '/api/dsh-input-prediction/session-setting', 'api/dsh-input-prediction/session-setting?sessionId=s',
+      'api/dsh-input-prediction/./session-setting', 'api/dsh-input-prediction/session-setting/',
     ].map(route => ({
       name: JSON.stringify(route),
       run: async () => {
         const dispatch = dispatcher()
         const bridge = new PluginRouteBridge(dispatch)
-        await expect(bridge.call({ route, body: { endpoint: 'state' } })).rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
+        const body = route.includes('dsh-input-prediction') ? { sessionId: 'session-1' } : { endpoint: 'state' }
+        expect(isAllowedPluginRoute(route)).toBe(false)
+        await expect(bridge.call({ route, body })).rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
         expect(dispatch).not.toHaveBeenCalled()
       },
     })))

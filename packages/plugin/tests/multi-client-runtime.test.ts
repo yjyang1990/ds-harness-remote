@@ -56,6 +56,7 @@ describe('HostPluginRuntime multi-Client routing', () => {
         const capabilities = ((description.payload as RpcResponsePayload).result as { capabilities: string[] }).capabilities
         expect(capabilities.includes('plugin.route.v1')).toBe(available)
         expect(capabilities.includes('plugin.input-prediction.v1')).toBe(available)
+        expect(capabilities.includes('plugin.input-prediction-setting.v1')).toBe(available)
         expect(dispatch).not.toHaveBeenCalled()
         const result = await call('plugin.route.call', { route: 'api/dsh-input-prediction', body: { sessionId: 'session-1' } })
         expect(result).toMatchObject(available

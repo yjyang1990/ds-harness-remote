@@ -691,6 +691,9 @@ export type PluginRouteCallParams = {
 } | {
   route: 'api/dsh-input-prediction'
   body: { sessionId: string }
+} | {
+  route: 'api/dsh-input-prediction/session-setting'
+  body: { sessionId: string; enabled?: boolean }
 }
 
 export interface PluginRouteCallResult {

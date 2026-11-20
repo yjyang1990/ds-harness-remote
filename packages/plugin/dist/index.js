@@ -81172,7 +81172,12 @@ var LoopbackPreview = class {
 };
 
 // packages/plugin/src/plugin-route-bridge.ts
-var PLUGIN_ROUTE_ALLOWLIST = ["api/bot", "api/session/uploadFileBinary", "api/dsh-input-prediction"];
+var PLUGIN_ROUTE_ALLOWLIST = [
+  "api/bot",
+  "api/session/uploadFileBinary",
+  "api/dsh-input-prediction",
+  "api/dsh-input-prediction/session-setting"
+];
 var BOT_REMOTE_OPERATIONS = [
   "abandon-work",
   "add-agent",
@@ -81357,6 +81362,7 @@ var BOT_REMOTE_OPERATIONS = [
 function isAllowedPluginRoute(route) {
   return PLUGIN_ROUTE_ALLOWLIST.some((allowed) => allowed === route);
 }
+var predictionSessionId = external_exports.string().min(1).max(256).refine((value) => value.trim() === value && value.trim().length > 0).refine((value) => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value));
 var callSchema = external_exports.discriminatedUnion("route", [
   external_exports.object({
     route: external_exports.literal("api/bot"),
@@ -81368,7 +81374,14 @@ var callSchema = external_exports.discriminatedUnion("route", [
   external_exports.object({
     route: external_exports.literal("api/dsh-input-prediction"),
     body: external_exports.object({
-      sessionId: external_exports.string().min(1).max(256).refine((value) => value.trim() === value && value.trim().length > 0).refine((value) => !/^(codex|acp|cursor|pi|opencode|claude|hermes):/.test(value))
+      sessionId: predictionSessionId
+    }).strict()
+  }).strict(),
+  external_exports.object({
+    route: external_exports.literal("api/dsh-input-prediction/session-setting"),
+    body: external_exports.object({
+      sessionId: predictionSessionId,
+      enabled: external_exports.boolean().optional()
     }).strict()
   }).strict()
 ]);
@@ -111038,7 +111051,9 @@ var HostPluginRuntime = class {
     }
     if (this.localGateway?.supportsCarrier && this.terminalEnabled) capabilities.push("harness.terminal.v1");
     if (this.fileViewerHost?.() !== void 0) capabilities.push("fileviewer.read.v1");
-    if (this.pluginRoutes?.() !== void 0) capabilities.push("plugin.route.v1", "plugin.input-prediction.v1");
+    if (this.pluginRoutes?.() !== void 0) {
+      capabilities.push("plugin.route.v1", "plugin.input-prediction.v1", "plugin.input-prediction-setting.v1");
+    }
     if (this.codex.isAvailable()) capabilities.push("codex.appserver.v1", "codex.appserver.transfer.v1");
     if (this.acp.enabledBackends().length > 0) {
       capabilities.push("agent.acp.v1", "agent.acp.transfer.v1", "agent.acp.workspace-files.v1");
@@ -111210,21 +111225,27 @@ function createPluginRouteDispatcher(readConnection, readPort, peer) {
     const connection = readConnection();
     const handler = connection?.createSharedFetchHandler?.("/api");
     const upload = route === "api/session/uploadFileBinary" ? body.payload : void 0;
-    const query = upload === void 0 ? "" : `?${new URLSearchParams({
-      sessionId: upload.sessionId,
-      ...upload.mediaType === void 0 ? {} : { mediaType: upload.mediaType },
-      ...upload.name === void 0 ? {} : { name: upload.name }
-    })}`;
-    const contentType2 = upload === void 0 ? "application/json" : "application/octet-stream";
-    const requestBody = upload === void 0 ? JSON.stringify(body ?? {}) : Buffer.from(upload.data, "base64");
+    const setting = route === "api/dsh-input-prediction/session-setting" ? body : void 0;
+    const readSetting = setting !== void 0 && setting.enabled === void 0;
+    let query = "";
+    if (readSetting) {
+      query = `?${new URLSearchParams({ sessionId: setting.sessionId })}`;
+    } else if (upload !== void 0) {
+      query = `?${new URLSearchParams({
+        sessionId: upload.sessionId,
+        ...upload.mediaType === void 0 ? {} : { mediaType: upload.mediaType },
+        ...upload.name === void 0 ? {} : { name: upload.name }
+      })}`;
+    }
+    const request = readSetting ? { method: "GET", signal } : {
+      method: "POST",
+      headers: { "content-type": upload === void 0 ? "application/json" : "application/octet-stream" },
+      body: upload === void 0 ? JSON.stringify(body ?? {}) : Buffer.from(upload.data, "base64"),
+      signal
+    };
     let response;
     if (handler !== void 0) {
-      response = await withSignal(handler.fetch(new Request(`http://127.0.0.1/${route}${query}`, {
-        method: "POST",
-        headers: { "content-type": contentType2 },
-        body: requestBody,
-        signal
-      }), peer), signal);
+      response = await withSignal(handler.fetch(new Request(`http://127.0.0.1/${route}${query}`, request), peer), signal);
     } else {
       const port = readPort();
       if (connection?.authenticatedUrl === void 0 || typeof port !== "number") {
@@ -111237,10 +111258,8 @@ function createPluginRouteDispatcher(readConnection, readPort, peer) {
         cookie = setCookie.map((item) => item.split(";", 1)[0]).join("; ") || void 0;
       }
       response = await fetch(`${origin}/${route}${query}`, {
-        method: "POST",
-        headers: { "content-type": contentType2, ...cookie === void 0 ? {} : { cookie } },
-        body: requestBody,
-        signal
+        ...request,
+        headers: { ...request.headers, ...cookie === void 0 ? {} : { cookie } }
       });
       if (response.status === 401) cookie = void 0;
     }
