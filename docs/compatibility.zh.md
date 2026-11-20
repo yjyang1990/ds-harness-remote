@@ -4,12 +4,12 @@
 
 | 组件 | 范围 |
 | --- | --- |
-| Remote | 当前源码 0.6.5；Android versionCode / Expo iOS buildNumber 72。版本号不等于已经发布 |
+| Remote | 当前源码 0.6.6；Android versionCode / Expo iOS buildNumber 74。版本号不等于已经发布 |
 | Harness 开发基线 | 0.2.2-rc.1，Node.js >=24.9 |
 | 旧 Harness | 保留 0.2.1-rc.5、0.2.0-rc.2 / rc.1 的官方 Typert / Session V3 路径 |
 | peer range | 接纳 0.2.1 / 0.2.2 预发布及正式版；范围接纳不等于每个版本均有运行时验收 |
 | TUI | 同版本独立 `ds-harness-remote-tui` 组合包；已验证 dsh-TUI 0.20.1 + Harness 0.2.2-rc.1 的 Android 核心 Relay 链路 |
-| DS-Bot | 固定路由对齐 0.3.6；覆盖命名接口不代表所有接口均完成手机端到端验证 |
+| DS-Bot | 固定路由对齐 0.3.8；覆盖命名接口不代表所有接口均完成手机端到端验证 |
 
 TUI profile 只启用一个 Remote Host entry，授权使用 `ds-harness-remote` CLI。完整安装方式见[组合包说明](../packages/tui/README.md)。
 
@@ -19,6 +19,7 @@ Host、随包 Remote Client 和 Android 只使用官方 Typert carrier。缺少 
 
 - Harness 0.2.2 的图片附件请求使用完整 `ImageAttachmentRef`；Android 保留字节数与尺寸。Host 桥对旧 Harness 降级为 attachmentId；旧客户端不能为新 Host 补齐引用时，由官方 Gateway 明确拒绝。
 - `session/control` 内存投影同时携带旧 key/value 与新 changes；虚拟 `session/page` 提供 cursor，并接受 `session/events`。
+- DSH Desktop 0.2.2-rc.5 的 `terminal/watch` 只返回当前设备拥有的会话终端。`workspaceFiles/search` 由原生 Harness 在经过验证的会话工作区内执行。
 - 本地 carrier 使用存活的官方 owner Peer；缺少 Peer 或事件服务的组合必须明确失败。独立 TUI 包负责装配官方 Remote API。
 - `workspaceTypes.available` 与协商 capability 均成立才开放对应后端。命令可发现、开关开启或版本范围匹配不表示后端已登录或就绪。
 

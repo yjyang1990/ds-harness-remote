@@ -752,11 +752,17 @@ Plugin Host 的 Harness 业务路由只接受 capability 对应的官方 Typert 
 `codex.app.*` RPC 和 event namespace；只有认证 Client Plugin 内的临时展示 target 可以把它包装成
 原生 Harness Session carrier，Android Client 则只能在本机内存中投影到已有移动端状态。Host、Server
 与 Android 都不得伪造或持久化第二份 Harness/CodeX Session。
+跨机器会话导入的受限写入见[跨机器会话传输](#跨机器会话传输)。
+
 工作区根目录写入只通过独立 `workspace.upload.v1` 的四个固定 RPC，
 不得将其加入 Harness / CodeX / ACP 的任意方法透传。参见 [Workspace upload](#workspace-upload)。
 旧 `system.info`、`workspace.get`、`sessions.*`、`session.*`、
 `permissions.respond`、`connection.ping` 与 `sync.from` 已退出 Plugin 协议，Host 必须返回
 `METHOD_NOT_FOUND`。Android 旧原型不是兼容目标。
+
+Harness Remote 固定白名单允许官方 CoT 翻译插件的 `cotTranslation/limits` 与
+`cotTranslation/translate` unary 调用；不开放该命名空间的其他方法或 stream。
+Host 必须启用对应官方插件，原生 Gateway 的不可用或翻译失败结果原样返回。
 
 ### 16.1 Request
 
@@ -830,11 +836,13 @@ Plugin Host 的 Harness 业务路由只接受 capability 对应的官方 Typert 
 请求上限；Bot 与预测请求及所有响应仍受 `MAX_SECURE_MESSAGE_BYTES` 限制。
 `api/dsh-input-prediction` 使用下述独立只读 schema，不接受 Bot 或上传字段。
 
-2026-11-13 对齐 [DS-Bot v0.3.6](https://github.com/Fei2411/DS-Bot/tree/v0.3.6)：
+2026-11-18 对齐 [DS-Bot v0.3.8](https://github.com/Fei2411/DS-Bot/tree/v0.3.8)：
 完整暴露其 `channel.js` 的命名 endpoint 与 `computer/index.js` 的 `computer-*` endpoint，
 包括模型供应商、密钥、连接器、IM、手机配对、电脑控制、更新、诊断、头像、分组、记忆编辑与 Side Chat。
 精确清单见 `packages/plugin/src/plugin-route-bridge.ts` 的 `BOT_REMOTE_OPERATIONS`；
-独立上游快照见 `packages/plugin/tests/fixtures/ds-bot-v0.3.6-endpoints.json`。
+独立上游快照见 `packages/plugin/tests/fixtures/ds-bot-v0.3.8-endpoints.json`。
+v0.3.8 新增的变更审查、文件下载、Markdown 图片、群聊搜索/待办、任务批注/取消、
+供应商模型保存及密钥存储/解锁/加解密端点均通过相同的认证转发入口，业务校验由 DS-Bot 执行。
 旧 Host 的 `btw`、`btw-cancel`、`room-continue` 仍放行。
 `approval-answer` 的 choice 不再限制为单次允许/拒绝，交由 DS-Bot 自身校验。
 这些管理操作仅能通过既有认证 Remote 通道调用；不新增 HTTP 路径或通用 endpoint 通配符。
@@ -866,7 +874,7 @@ Android 卡片使用固定 0.2.1 schema 和受限表达式解释器，支持本�
 HTML 仅展示摘要和主机打开提示，不执行 HTML/脚本，不增加网络访问或通用 RPC。
 
 未知 endpoint 返回 `INVALID_MESSAGE`，浏览器兼容入口显示
-`remote-plugin/operation-not-allowed` 原生错误封装。DS-Bot v0.3.6 的管理接口
+`remote-plugin/operation-not-allowed` 原生错误封装。DS-Bot v0.3.8 的管理接口
 已按上述完整白名单开放，旧版本文档中的“仅单次审批/本地管理”限制不再适用。
 
 ```json
@@ -993,6 +1001,15 @@ seq/cursor/throughSeq/hasMore、轮次生命周期及工具关联/错误状态�
 关闭模式后重新打开会话加载完整历史；CodeX 已有的详情句柄与按需读取继续有效。
 此能力只减少 Host → Client 历史载荷，不保证减少后端读取历史成本。
 
+Session V3 最终 `assistant/message.data.stream` 是逐块回放数据，精简投影省略该字段；正文、
+reasoning、工具关联、`source` 模型信息与 `surfaceOp` 仍以最终 `message` 与事件字段为准。省略前，
+若顶层 `data.usage` 缺失（`undefined` 或 `null`），Host 把 `stream` 中最后一个
+`{ type: "chunk", chunk: { type: "usage", usage } }` 的 `usage` 提升为 `data.usage`，与 Android
+`data.usage ?? stream` 的回退语义一致；已有顶层 `data.usage` 时保持其优先级，没有 usage chunk 时不补字段。
+§19 对 `data.stream` 的必需约束针对完整历史，精简投影只发给按连接显式开启该模式的 Client。
+当前只有 Android 发送 `remote.history.configure`；Desktop Client 不开启精简，始终收到含 `stream`
+的完整 V3 envelope。其他 Client 开启精简前，必须先确认自身不依赖 `data.stream`。
+
 普通工具正文的默认摘要在 512 字符截断；但已识别的 DS Bot 群聊轮次载荷
 （`{"replies":[...],"passed":N}`）属于会话正文而非工具诊断，改为**有界结构化保留**：
 只保留 `replies` 条目的原语字段、原始顺序、每条正文上限、条目上限与单条投影上限，
@@ -1087,6 +1104,40 @@ carrier 或 Session 代际不一致时，Desktop Client 必须在选择目标、
 
 当前兼容范围见[版本兼容](compatibility.zh.md)。Plugin Client 与 Android 必须在加密通道中探测 capability，不能从 clientVersion 推测或降级到已退役 ApiProxy。
 
+### 跨机器会话传输
+
+经已认证的 Noise 通道调用。源 Host 通过 `harness.transport.describe` 声明
+`session.transfer.export.v1`，目标 Host 声明 `session.transfer.import.v1`。
+两个能力独立。操作范围为单个普通 Harness 会话或源工作区的普通会话。
+
+| 方法 | 请求 | 成功结果 |
+| --- | --- | --- |
+| `session.transfer.export.open` | `{scope: {kind: "session", sessionId} \| {kind: "workspace", workspaceId}}` | `{handle, sessions: [{sessionId, throughSeq}], chunkBytes}` |
+| `session.transfer.export.read` | `{handle, sessionId, offset}` | `{offset, data, totalBytes?, sha256?}` |
+| `session.transfer.export.close` | `{handle}` | `{}` |
+| `session.transfer.import.open` | `{workspaceId, batchId, sourceSessionId, formatVersion: 1}` | `{handle, chunkBytes, maxBytes}` |
+| `session.transfer.import.chunk` | `{handle, offset, data}` | `{receivedBytes}` |
+| `session.transfer.import.commit` | `{handle, requestId, totalBytes, sha256}` | `{sessionId, workspaceAttached}` |
+| `session.transfer.import.status` | `{batchId, requestId}` | `{status: "unknown"}` 或 `{status: "completed", sessionId, workspaceAttached}`。失败的提交返回原 RPC 错误。 |
+| `session.transfer.import.abort` | `{handle}` | `{}` |
+
+源 Host 固定清单与包含边界 `throughSeq`，按会话将
+`{formatVersion: 1, version, createdAt, inheritedEventCount, events}`
+编码为 UTF-8 JSON，再 gzip 压缩。源端原会话与工作区只读。
+每次开始读取一条会话时 `offset` 从 0 开始。数据块为标准 Base64，
+字节偏移按压缩数据计算，最后一块返回总压缩字节数及其小写十六进制 SHA-256。
+导入按连续偏移上传。每块最多 256 KiB，每条会话压缩及解压后均最多 8 MiB，
+事件最多 50,000 条，一次工作区导出最多 2,048 条候选会话。
+工作区范围跳过子会话与没有可复制轮次的会话。
+
+目标 Host 校验数据及目标工作区，将导入历史中的工作目录变更事件指向目标工作区。
+源端 worktree 创建及 Forge worktree 状态记录替换为可忽略的记录，保留事件序号和继承边界。
+官方 Harness 服务验证处理后的历史、持久化新会话并附加工作区。源会话 ID 只用于标识传输，目标 Host 生成新 ID。附件文件和跨会话关系
+暂不迁移。提交结果中的 `workspaceAttached: false` 表示历史已持久化，工作区附加失败。
+句柄绑定连接，闲置五分钟或连接关闭后释放。提交结果按设备、批次和请求 ID 在
+Host 进程内保留五分钟。断线后先查询结果，`unknown` 也可能表示结果已过期，
+此时客户端不得自动重提。状态查询可以等待进行中的提交结束。
+
 ## 18. 历史数据结构（已废弃）
 
 §18.1–18.6 是冻结 Android 原型的旧投影，已在代码中清除，不是 Plugin Host 可接受或
@@ -1116,7 +1167,8 @@ envelope；`harness.remote.v3` 承载 `dsh-v0.1.5-rc.1` 的相同官方 carrier 
 两项 capability 复用相同的 `harness.remote.call`、stream 与 transfer RPC。它们的区别是
 Session 业务语义：V3 使用 `SessionWireHeader.version = 3` 与 `isSeeded`，replacement surface
 operation 使用 `{ op: "replace", startSeq, endSeq }`，实时 Assistant 输出使用
-`assistant-stream` frame，并要求最终 `assistant/message.data.stream`。v0.1.2 的 replacement 使用
+`assistant-stream` frame，并要求最终 `assistant/message.data.stream`（指完整历史；连接显式开启的
+`remote.history.compact.v1` 精简投影可省略，见 §17）。v0.1.2 的 replacement 使用
 `{ op: "replace", start, end }`。Desktop Client 不在 v0.1.2 与 V3 格式之间翻译，只允许相同代际互连；
 Android 与 VS Code 可直接消费各自已声明支持的 Host 格式。
 
@@ -1321,6 +1373,7 @@ Session 结束不会自动移除该配置。
 Harness 从 `0.2.1-alpha.3` 起将原生输入改为 `terminal/attach` 双向流，RC.1 沿用此契约。
 本仓库不增加通用 uplink RPC：Desktop 在本地将原生 attach 转成既有 follow/write/resize，
 Host 在通过终端策略后将 Harness follow 转成官方 attach；CodeX/ACP 保留各自终端域。
+Desktop 原生 write 帧可附带布尔值 `typed`，转成加密 write RPC 时只转发输入数据。
 每个 attachment 的输入 sequence 从 1 递增，Host ack 后才完成 write/resize；拒绝、取消或
 断线不能确认或重放输入。Host 每 attachment 至多 32 个待确认输入，队列上限 64 项/256 KiB；
 原生客户端侧输出缓冲最多 256 项/4 MiB。状态快照按官方 writable 映射既有 controllerId。
@@ -1418,9 +1471,13 @@ Codex 专用 API。Host 通过 `acp.enabled` 和 `acp.backends` 独立配置 Cur
 
 业务 RPC 固定为 `agent.acp.call|respond|stream.*|transfer.*`，事件固定为
 `agent.acp.frame|stream.closed|catalog.changed`，所有 Client（包括 Web）使用同一独立 ACP 数据面。
-`agent.acp.call` 不是通用代理；编译期 allowlist 仅含 `initialize`、`session/new`、`session/load`、
-`session/prompt`、`session/cancel`、以及 Host 扩展 `dsh/directoryList`、`dsh/workspaceList`、
-`dsh/sessionList`、`dsh/sessionHistory`、`dsh/sessionArchive`。这些 `dsh/` 名称是 ACP call 内的 Host 扩展，
+`agent.acp.call` 不是通用代理；编译期 allowlist 含 `initialize`、`session/new`、`session/load`、
+`session/fork`、`session/set_mode`、`session/prompt`、`session/cancel`，以及 Host 扩展
+`dsh/directoryList`、`dsh/workspaceList`、`dsh/workspaceCreate`、`dsh/workspaceRename`、
+`dsh/workspaceDelete`、`dsh/workspaceReorder`、`dsh/sessionList`、`dsh/sessionHistory`、
+`dsh/sessionModels`、`dsh/selectModel`、`dsh/sessionModes`、`dsh/sessionCommands`、
+`dsh/selectPermission`、`dsh/sessionPin`、`dsh/sessionUnpin`、`dsh/sessionArchive`、
+`dsh/toolCall`。这些 `dsh/` 名称是 ACP call 内的 Host 扩展，
 不得通过 Harness ApiProxy / Typert 业务端点调用。
 
 `dsh/sessionHistory` 是只读访问：已认证且受信任的同账号连接通过 backend、会话目录 authority
@@ -1587,6 +1644,19 @@ active turn owner，并以 Host 生成的 opaque `requestHandle` 暴露。`codex
 审批自动 decline。`acceptForSession`、execpolicy amendment 和额外 permission grant 不得进入
 Remote frame。
 
+Host 在最后一个 Codex stream 关闭或所属 Peer 断开后，自动对空闲 Thread 发送
+`thread/unsubscribe`。连接断开只撤销 mutation lease，不代表上游 Turn 已结束；运行状态独立
+保留，直到收到上游 `turn/completed` 或 terminal Thread status。未决审批同样阻止释放。
+释放前通过 Host 内部的 `thread/goal/get` 确认 Goal，并跟踪 `thread/goal/updated|cleared`；
+`active` Goal 跨 Turn 空闲期仍保留，完成、暂停、阻塞或预算/额度停止后还需等待当前 Turn 收尾。
+查询失败或未知状态保守保留，后续释放请求可重新确认；明确不支持或禁用 Goal 的版本沿用普通释放。
+此读取不增加 Remote 方法白名单，也不重放 Goal 或 Turn mutation。
+Peer 断开还清理该连接曾经读取/加载/创建但尚未打开 stream 的 Thread；其他连接仍有订阅时不释放。
+App Server 子进程使用 `-c thread_unload_delay_secs=0`，仅缩短该进程的原生空闲卸载延迟，不写用户配置。
+`unsubscribed` 是退订确认，不是关闭确认：除 `notLoaded` 外，Host 等待 `thread/closed`，
+同 Thread 的并发 stream open / RPC 在关闭确认后继续。五秒内未确认或退订失败时，后续操作
+失败关闭，直到原生关闭通知或 App Server 重启；不重放 mutation、不删除锁文件、不终止其他 Thread。
+
 `codex.appserver.transfer.v1` 使用独立的 512 KiB chunk、288 MiB 总上限、canonical base64，
 承载大 History 响应和图片 Prompt request；它保持严格有序/恰好一次、每连接输入/输出各两个
 transfer 和 2 分钟 idle 清理。重组后的内容必须再次
@@ -1749,7 +1819,15 @@ commit 任意一次发送后失败，都不能回退重放。abort 是清理请�
 #### 生命周期、重试与落盘边界
 
 每连接最多 2 个活动上传。Host 在工作区根目录排他创建随机 `.dsh-upload-*.part`
-临时文件，权限为 `0600`；根目录必须经过 realpath 与目录身份验证。每次分块写入都重新
+临时文件，权限为 `0600`。根目录必须经过 realpath 与目录身份验证。
+Host 进程最多允许 4 个活动上传，活动上传声明大小之和最多为 4 GiB。
+同一会话的活动上传声明大小之和最多为 2 GiB。
+提交、取消或失败后，Host 释放对应的在途字节预算。
+Host 不限制已完成上传的累计字节数或会话数量。
+Host 在 `open` 时原子分配预算，并检查目标磁盘至少保留 32 MiB。
+磁盘检查预留同一磁盘上所有活动上传尚未写入的字节。
+Host 在每次写入前重查可用空间。磁盘之外的进程仍可同时占用空间。
+每次分块写入都重新
 验证根目录未被替换（realpath 与设备号/inode），会话 authority 则按有界频率重验
 （至多 5 s 或累计 4 MiB 后再次解析，仍受每次 15 s 解析上限约束），并在 `open` 与
 发布前的 `commit` 强制执行。目录改变或失去 authority 时拒绝继续；authority 在上传
@@ -1759,6 +1837,7 @@ Host 本地进程仍保有原有文件系统权限，本协议不隔离恶意本
 未提交上传在空闲达到 2 min 后进入清理范围；Host 定时或处理下一次调用时回收。
 取消、失败和连接断开也清理未提交临时文件；不得跟随被替换的根目录或删除被替换的
 临时条目。进程崩溃后的残留不支持恢复上传。每次目录 authority 解析最多等待 15 s。
+Host 当前不扫描或清理进程崩溃后留下的旧上传临时文件。
 
 原子发布成功是提交点。提交点后的 abort、断线或 Client 取消不能撤销文件。
 Host 为每连接最多缓存 64 个提交结果，保留至提交后 2 min 或被淘汰；缓存存在时，
@@ -1789,7 +1868,7 @@ Web 在选择、拖拽或粘贴文件后开始上传，每个输入栏最多保�
 | `FEATURE_NOT_SUPPORTED` | Host 没有安装该上传处理器 |
 | `UPLOAD_INVALID_NAME` | 文件名不满足上述限制 |
 | `UPLOAD_ID_IN_USE` | 当前连接中该 UUID 已用于活动上传或仍有提交缓存 |
-| `UPLOAD_LIMIT` | 当前连接活动上传已达上限 |
+| `UPLOAD_LIMIT` | 连接、Host、会话或磁盘额度不足 |
 | `UPLOAD_WORKSPACE_UNAVAILABLE` | 会话无法解析为可信绝对工作区 |
 | `UPLOAD_WORKSPACE_CHANGED` | 会话目录或根目录/临时文件身份改变 |
 | `UPLOAD_NOT_FOUND` | 活动句柄不存在、已过期或 session 不匹配；无缓存的 commit 也返回此码 |
@@ -1980,6 +2059,10 @@ pong 回显 nonce。Heartbeat 不能携带业务数据。
 | Workspace upload file | LAN / direct P2P：1 GiB；TURN / Relay / 未知：20 MiB；允许零字节 |
 | Workspace upload chunk（解码后） | 64 KiB；以 open 返回的 chunkBytes 为准 |
 | Workspace active uploads / connection | 2；2 min idle 后回收 |
+| Workspace active uploads / Host | 4 |
+| Workspace active upload bytes / Host | 4 GiB |
+| Workspace active upload bytes / session | 2 GiB |
+| Workspace upload disk free space | 32 MiB；另预留活动上传尚未写入的字节 |
 | Workspace upload authority lookup | 每次最多 15 s |
 | Workspace upload commit cache / connection | 最多 64 项；提交后最多 2 min |
 | Web composer files | 5；仅 Web 交互限制 |
@@ -2267,3 +2350,36 @@ or oversized client-local files fail the prompt. Paths absent on the client rema
 text mentions for remote Host resolution.
 At most four files and 192 MiB total are accepted per prompt. Non-absolute and non-native `@` references keep their existing behavior. The remote Host's
 attachment service still controls file acceptance and storage.
+
+### Optional independent connection racing
+
+A Gateway may include a positive `webrtcFallbackTimeoutMs` (at most 2,147,483,647 ms) in `connect.accepted` to override the hello timeout for that connection, and `parallelConnections: true` when it supports independent Client control sockets with the same identity and the selected Host supports multiple logical connections. Absence means Clients must use sequential attempts. This is a Server-to-Client extension; Host frames, SDP and ICE payloads remain unchanged. Each attempt owns its own `connectionId`, authorization and ICE budget. Never send two offers on one logical connection or bypass membership/peer authorization.
+
+Web automatic mode and Desktop Client prepare a direct-only connection (STUN, no TURN) and, after the Gateway confirms concurrency support, a TURN-only connection on a second control socket. The direct priority window is 3 seconds from the start of direct RTC negotiation, not from opening the control socket. A ready direct path wins immediately. A ready TURN waits until that window expires or direct fails. If TURN is not ready when the window expires, direct remains eligible. Each RTC attempt follows the Server WebRTC fallback timeout (the per-connection snapshot overrides the hello default). The selection watchdog initially allows 25 seconds including control authorization and ICE configuration retrieval; each attempt may extend it once, at actual RTC startup, to preserve that configured RTC budget. Repeated startup notifications cannot extend it. At the watchdog deadline use a ready TURN or close the provisional connections and try Relay. A candidate control timeout or transient socket failure only fails that candidate; authorization/protocol failures remain terminal. Relay attachment and the winner's Noise handshake retain their own deadlines.
+
+Only the selected connection starts Noise and subsequent business RPCs. Close losers before handing off business traffic; cancellation, late readiness and closed standby paths must never select a retired connection. Authentication/protocol failures stop startup rather than silently retrying as ICE failures. Losing a selected established path uses existing reconnect behavior, not replay of business mutations. An old Gateway remains on direct → TURN → Relay; deployed Hosts supporting concurrent connection IDs need no new protocol.
+
+### Optional in-band live transport upgrade (`remote.transport.upgrade.v1`)
+
+When the Host advertises `remote.transport.upgrade.v1` in `harness.transport.describe`, a Client that completed its authenticated Noise IK session immediately over Relay may negotiate higher-tier WebRTC DataChannels (`TURN -> P2P -> LAN`) in-band without rotating Noise keys, resetting stream subscriptions, or altering the Relay Server:
+
+- **Direct-first establishment**: Mobile automatic connections negotiate WebRTC before Noise authentication and initial history/catalog reads. LAN-capable routes must not skip direct negotiation through `relayFirst`. Relay carries business data only after direct negotiation fails (or when explicitly selected). After Relay fallback, a capable Host may be upgraded in-band without repeating initial reads. Initial unsequenced WebRTC connections do not enter the sequenced upgrade path.
+- **RPCs & events**: `remote.transport.upgrade.offer` (`{ attemptId, sdp } -> { attemptId, sdp }`), `remote.transport.upgrade.ice` (`{ attemptId, candidate } -> { ok: true }`, with responder trickle ICE emitted as `remote.transport.upgrade.ice` event), `remote.transport.upgrade.activate` (`{ attemptId, transport? } -> { activated, mode, previousLegEndCounter? }`), `remote.transport.upgrade.drain` (`{ attemptId, previousLegEndCounter } -> { ok: true }`), and `remote.transport.upgrade.abort` (`{ attemptId? } -> { ok: true }`).
+- **Authoritative Host path verification**: Tier promotion (`Relay < TURN < P2P < LAN`) strictly trusts the Host's own verified ICE candidate-pair telemetry (`connectionDetails().mode`); client hints never elevate a lower-tier path into `LAN` or `P2P`.
+- **Sequenced framing, watermark draining & bounded reorder**: Upgraded DataChannel frames prepend a 12-byte big-endian sequence header (`'DSHU' || uint64 noiseCounter`) before RTCH chunking. Both endpoints buffer out-of-order frames in `SequencedCiphertextReorderBuffer` (bounded by 256 frames, 4 MiB total bytes, and a 5 s gap timeout) and drain superseded WebRTC legs until `receivingCounter >= previousLegEndCounter` (bounded by a 3 s fallback deadline). Upgrade failure before activation keeps the current carrier intact; DataChannel loss after activation closes the tunnel so normal reconnect recovery runs.
+
+### DSH Web browser handoff
+
+A Host with a mounted DSH Web app and compatible browser authentication advertises
+`dsh.web.v1` in `harness.transport.describe`. On the authenticated Noise connection,
+`dsh.web.open({})` returns `{ url, browserGrant, expiresAt }`. The Host identifies the
+Client from the authenticated peer. The HTTPS URL is the tunnel origin root and
+`expiresAt` is the grant redemption deadline in Unix milliseconds.
+
+Android and iOS submit `browserGrant` as a URL-encoded form field in a top-level
+`POST /__remote/session` in their WebView. The Worker consumes the grant once,
+sets its host-only session cookie, and redirects with 303 to `/`.
+`dsh.web.close({})` closes the active lease for that Noise connection.
+The Host checks authorization at least every 15 seconds while connected and
+before reconnecting the allocated tunnel. The official DSH application cookie
+stays in Host memory and authenticates the local upstream.

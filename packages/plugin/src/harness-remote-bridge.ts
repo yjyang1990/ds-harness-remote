@@ -105,13 +105,22 @@ const transferReadSchema = z.object({
 const directoryListSchema = z.object({
   path: z.string().min(1).max(4096).optional(),
 }).strict()
+const workspaceSearchPayloadSchema = z.object({ args: z.object({
+  workspaceFileScopeId: z.string().min(1),
+  request: z.object({
+    query: z.string(),
+    excludedPaths: z.array(z.string()),
+    includeHidden: z.boolean(),
+    respectGitignore: z.boolean(),
+  }).strict(),
+}).strict() }).strict()
 
 const MAX_ACTIVE_STREAMS = MAX_ALPHA_STREAMS_PER_CONNECTION
 const MAX_ACTIVE_TRANSFERS = MAX_ACTIVE_TRANSFERS_PER_DIRECTION
 const INLINE_TRANSFER_RESPONSE_BYTES = 2 * 1024 * 1024
 const EXTERNAL_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 
-/** Fixed v0.1.2 Typert Remote subset exposed to authenticated peers. */
+/** Fixed Typert Remote subset exposed to authenticated peers. */
 export const HARNESS_REMOTE_ALLOWLIST = [
   '$events',
   '$events/result',
@@ -120,6 +129,8 @@ export const HARNESS_REMOTE_ALLOWLIST = [
   'agentPresets/select',
   'commands/execute',
   'commands/list',
+  'cotTranslation/limits',
+  'cotTranslation/translate',
   'credentials/describe',
   'credentials/set',
   'credentials/unset',
@@ -193,12 +204,15 @@ export const HARNESS_REMOTE_ALLOWLIST = [
   'userQuestions/attachWait',
   'claudeCodeMods/watchBand',
   'claudeCodeMods/pressBand',
+  'speech/catalog',
+  'speech/transcribe',
   'workspaceFiles/list',
   'workspaceFiles/stat',
   'workspaceFiles/read',
   'workspaceFiles/readBytes',
   'workspaceFiles/readAll',
   'workspaceFiles/readRelated',
+  'workspaceFiles/search',
   'workspaceFiles/changes',
   'officeToPdf/render',
   'officeToPdf/generation',
@@ -357,7 +371,13 @@ export class HarnessRemoteBridge {
     try {
       let nativePayload = normalizeWorkspaceRequestPayload(params.endpoint, params.payload, this.harnessVersion)
       nativePayload = await normalizeSessionAttachmentPayload(params.endpoint, nativePayload, this.harnessVersion, this.gateway, signal)
-      if (this.resolveWorkspaceRoot !== undefined && WORKSPACE_FILE_READ_ENDPOINTS.has(params.endpoint)) {
+      if (params.endpoint === 'workspaceFiles/search') {
+        const search = workspaceSearchPayloadSchema.parse(nativePayload)
+        if (!await this.resolveWorkspaceRootForSession(search.args.workspaceFileScopeId, signal)) {
+          throw workspaceFileFailure('WORKSPACE_UNAVAILABLE', 'The workspace is unavailable.', 'authority-unavailable')
+        }
+        nativePayload = search
+      } else if (this.resolveWorkspaceRoot !== undefined && WORKSPACE_FILE_READ_ENDPOINTS.has(params.endpoint)) {
         nativePayload = await this.assertNativeWorkspaceFileCall(params.endpoint, nativePayload, signal)
       }
       const nativeResult = params.endpoint === 'commands/execute'
@@ -570,7 +590,9 @@ export class HarnessRemoteBridge {
     const params = streamOpenSchema.parse(input) as HarnessRemoteStreamOpenParams
     this.assertAllowed(params.endpoint)
     if (params.endpoint.startsWith('pluginManager/')) throw new RpcError('METHOD_NOT_ALLOWED', 'Plugin management endpoints are not streams.')
+    if (params.endpoint.startsWith('cotTranslation/')) throw new RpcError('METHOD_NOT_ALLOWED', 'Translation endpoints are not streams.')
     if (params.endpoint.startsWith('settings/')) throw new RpcError('METHOD_NOT_ALLOWED', 'Settings endpoints are not streams.')
+    if (params.endpoint === 'workspaceFiles/search') throw new RpcError('METHOD_NOT_ALLOWED', 'Workspace search is not a stream.')
     if (TERMINAL_CALLS.has(params.endpoint)) throw new RpcError('METHOD_NOT_ALLOWED', 'This terminal endpoint is not a stream.')
     if (TERMINAL_STREAMS.has(params.endpoint)) this.terminal.check(params.endpoint, params.payload)
     if (this.streams.has(params.streamId)) throw new RpcError('REQUEST_CONFLICT', 'The Harness Remote stream is already open.')
@@ -592,6 +614,7 @@ export class HarnessRemoteBridge {
       throw error
     }
     if (params.endpoint === '$events') source = this.remoteEventsWithFallback(source, controller.signal)
+    if (params.endpoint === 'terminal/watch') source = this.terminal.watch(params.payload, source)
     void this.pump(params.streamId, source, controller.signal, params.endpoint === 'session/follow', params.transferFrames)
     return { opened: true, streamId: params.streamId }
   }

@@ -4,7 +4,7 @@ import { fromBase64Url, toBase64Url } from '@dsh-remote/crypto'
 import { deviceTokenPairSchema, type DeviceTokenPair as TokenPair } from '@dsh-remote/protocol'
 import type { RtcIceServer } from '@dsh-remote/webrtc'
 import type { HostIdentity } from './identity-store.js'
-import { ServerCredentialsBusyError, ServerCredentialsLockUnsupportedError, type ServerCredentialStore, type ServerCredentials } from './server-credentials.js'
+import { ServerCredentialsBusyError, ServerCredentialsLockDirectoryError, ServerCredentialsLockUnsupportedError, type ServerCredentialStore, type ServerCredentials } from './server-credentials.js'
 import { normalizeServerUrl } from './config.js'
 import { PLUGIN_VERSION } from './version.js'
 
@@ -66,6 +66,13 @@ export interface ServerHostDevice {
 export interface AuthorizedPeerDevice extends ServerHostDevice {
   role: 'host' | 'client'
   identityKey: string
+}
+
+export interface DshWebRequest {
+  clientDeviceId: string
+  connectionId: string
+  requestId: string
+  leaseExpiresAt: number
 }
 
 export class HostServerApi {
@@ -377,7 +384,7 @@ export class HostServerApi {
       if (error instanceof ServerCredentialsBusyError) {
         throw new ServerApiError(error.code, error.message, true)
       }
-      if (error instanceof ServerCredentialsLockUnsupportedError) {
+      if (error instanceof ServerCredentialsLockUnsupportedError || error instanceof ServerCredentialsLockDirectoryError) {
         throw new ServerApiError(error.code, error.message, false)
       }
       throw error
@@ -487,6 +494,19 @@ export class HostServerApi {
       throw new ServerApiError('INVALID_MESSAGE', 'The Server returned invalid device presence.', false)
     }
     return { online: result.online, ...(typeof result.lastSeenAt === 'number' ? { lastSeenAt: result.lastSeenAt } : {}) }
+  }
+
+  async dshWebRequest(action: 'allocate' | 'grant' | 'check', input: DshWebRequest & { useServerLease?: true }, signal: AbortSignal, sessionId?: string): Promise<unknown> {
+    const path = this.dshWebPath() + (action === 'allocate' ? '' : `/${action}`)
+    return this.request(path, { method: 'POST', body: JSON.stringify({ ...input, sessionId }), signal })
+  }
+
+  async closeDshWeb(sessionId: string): Promise<void> {
+    await this.request(this.dshWebPath() + '/' + encodeURIComponent(sessionId), { method: 'DELETE', signal: AbortSignal.timeout(3_000) })
+  }
+
+  private dshWebPath(): string {
+    return `/api/v1/hosts/${encodeURIComponent(this.requireIdentity().deviceId)}/dsh-web/sessions`
   }
 
   private async loadOrIssue(identity: HostIdentity): Promise<ServerCredentials> {

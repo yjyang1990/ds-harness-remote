@@ -126,10 +126,10 @@ function hiddenPeerReflexiveLanStats(): RtcStatsEntry[] {
   ]
 }
 
-function tailscaleP2pStats(localType: 'host' | 'prflx' = 'prflx'): RtcStatsEntry[] {
+function tailscaleP2pStats(localType: 'host' | 'prflx' = 'prflx', remoteAddress = 'fd7a:115c:a1e0::c'): RtcStatsEntry[] {
   return [
     { type: 'local-candidate', candidateType: localType, id: 'lc' },
-    { type: 'remote-candidate', candidateType: 'host', address: 'fd7a:115c:a1e0::c', id: 'rc' },
+    { type: 'remote-candidate', candidateType: 'host', address: remoteAddress, id: 'rc' },
     { type: 'candidate-pair', selected: true, nominated: true, localCandidateId: 'lc', remoteCandidateId: 'rc' },
   ]
 }
@@ -238,10 +238,10 @@ describe('detectSelectedTransport', () => {
       {
         name: 'does not treat host-to-host Tailscale overlay candidates as LAN',
         run: () => {
-          expect(detectSelectedPath(asStats(tailscaleP2pStats('host')))).toEqual({
-            transport: 'p2p',
-            mode: 'P2P',
-          })
+          for (const address of ['100.64.0.8', 'fd7a:115c:a1e0::c']) {
+            expect(detectSelectedPath(asStats(tailscaleP2pStats('host', address))), address)
+              .toEqual({ transport: 'p2p', mode: 'P2P' })
+          }
         },
       },
       {
@@ -513,6 +513,50 @@ describe('RtcDataChannelTransport initiator', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('rejects connect() if the data channel closes while getStats() is still pending', async () => {
+    await runScenarios([
+      { name: 'channel.onclose fires before getStats resolves', fireCloseEvent: true },
+      { name: 'channel.readyState turns closed before getStats resolves', fireCloseEvent: false },
+    ].map(row => ({
+      name: row.name,
+      run: async () => {
+        const pc = new FakePeerConnection()
+        let resolveStats: ((stats: RtcStats) => void) | undefined
+        vi.spyOn(pc, 'getStats').mockImplementation(() => new Promise<RtcStats>(resolve => { resolveStats = resolve }))
+        const transport = new RtcDataChannelTransport({
+          role: 'initiator',
+          factory: factoryFor(pc),
+          onSignal: () => undefined,
+        })
+        const closed = vi.fn()
+        const received: Uint8Array[] = []
+        transport.onClose(closed)
+        transport.onMessage(data => received.push(data))
+        const connecting = expect(transport.connect()).rejects.toMatchObject({ code: 'RTC_CLOSED' })
+        await flush()
+        transport.handleSignal({ type: 'answer', sdp: 'v=0 answer' })
+        await flush()
+        const channel = pc.channels[0]!
+        channel.open()
+        await vi.waitFor(() => expect(resolveStats).toBeTypeOf('function'))
+        // Messages arriving during the async getStats() window are still delivered.
+        channel.receive(new Uint8Array([4, 5, 6]).buffer)
+        expect(received).toHaveLength(1)
+
+        if (row.fireCloseEvent) {
+          channel.close()
+        } else {
+          channel.readyState = 'closed'
+        }
+        resolveStats!(asStats(lanStats()))
+        await connecting
+        expect(transport.getStats().connected).toBe(false)
+        expect(closed).not.toHaveBeenCalled()
+        await transport.close()
+      },
+    })))
   })
 })
 

@@ -4,12 +4,12 @@
 
 | Component | Scope |
 | --- | --- |
-| Remote | Source version 0.6.5; Android versionCode / Expo iOS buildNumber 72. This does not establish publication status |
+| Remote | Source version 0.6.6; Android versionCode / Expo iOS buildNumber 74. This does not establish publication status |
 | Harness development baseline | 0.2.2-rc.1, Node.js >=24.9 |
 | Older Harness | Official Typert / Session V3 paths for 0.2.1-rc.5 and 0.2.0-rc.2 / rc.1 |
 | Peer range | 0.2.1 / 0.2.2 prereleases and stable versions; range acceptance is not runtime validation of every version |
 | TUI | Matching standalone `ds-harness-remote-tui`; core Android Relay flow validated with dsh-TUI 0.20.1 + Harness 0.2.2-rc.1 |
-| DS-Bot | Fixed named routes aligned with 0.3.6; route coverage is not full mobile E2E coverage |
+| DS-Bot | Fixed named routes aligned with 0.3.8; route coverage is not full mobile E2E coverage |
 
 Enable only one Remote Host entry per TUI profile. Use the `ds-harness-remote` CLI for authorization. See the [bundle instructions](../packages/tui/README.md).
 
@@ -19,6 +19,7 @@ The Host, bundled Remote Client and Android use the official Typert carrier. Hos
 
 - Harness 0.2.2 requires the complete `ImageAttachmentRef`; Android retains byte length and dimensions. The Host bridge sends attachmentId to older Harness. An older client unable to supply the verified reference is explicitly rejected by the new official Gateway.
 - Virtual `session/control` sends both legacy key/value and new changes; virtual `session/page` includes cursor and accepts `session/events`.
+- DSH Desktop 0.2.2-rc.5's `terminal/watch` returns only session terminals owned by the current device. Native Harness runs `workspaceFiles/search` inside the verified session workspace.
 - Local carriers require a live official owner Peer. Missing Peer or event services must fail explicitly; the standalone TUI bundle composes the official Remote APIs.
 - Both negotiated capability and `workspaceTypes.available` must permit a backend. Discovering a command or enabling a setting does not prove login or readiness.
 

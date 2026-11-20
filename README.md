@@ -25,6 +25,10 @@
   <a href="https://dshfind.com/en/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=en" alt="dshfind downloads"></a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/177732" target="_blank"><img src="https://trendshift.io/api/badge/repositories/177732" alt="liguobao%2Fds-harness-remote | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
 ## Connect once. Ready whenever you are.
 
 Continue using your DeepSeek Harness instance from a phone, computer, or browser. Return to the same Harness session from whichever device is with you.
@@ -55,6 +59,7 @@ The DeepSeek Harness desktop edition is supported. Install the latest release:
 | DSH plugin | Remote sidebar | Supported | Control other devices or act as a Host—the choice is yours! |
 | Web | Browser page | Supported | Open [https://dsh.r2049.cn](https://dsh.r2049.cn); reuses the native Harness interface |
 | Android | Native app | Supported | Download the APK from [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest); see the [Android guide](apps/android/README.md) |
+| HarmonyOS | Native app | Supported | Download from [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) |
 | DSH Go | A standout app by ccch1mneyyy | Supported | See [ccch1mneyyy/dsh-go: run DSH directly on your phone or control DSH on your computer remotely.](https://github.com/ccch1mneyyy/dsh-go) |
 | iOS | TestFlight beta | Beta | Not publicly released; see [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
 | dsh-TUI | Standalone Host bundle + CLI | Core device checks passed | Install matching `ds-harness-remote-tui`; see [tested versions and limits](docs/compatibility.md). The installer does not create a Web service for it |
@@ -283,6 +288,7 @@ DS Bot is a bot plugin for DeepSeek Harness (dsh) that turns dsh into a bot. You
 
 - Friendly link: [DSH Go](https://github.com/ccch1mneyyy/dsh-go) — DeepSeek Harness in your pocket: run it locally on your phone or control your computer remotely. Remote integration is available.
 - Friendly link: [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) — terminal-first Harness client; Remote Host integration uses the standalone `ds-harness-remote-tui` bundle.
+- Friendly link: [akazwz/hostc](https://github.com/akazwz/hostc) — Expose a local dev server at a public HTTPS URL with one command. Supports WebSockets and hot reload. Free to use on Cloudflare Workers, with no account required.
 - Friendly link: [LINUX DO](https://linux.do/)
 - Friendly link: [Cyber Liu Kanshan](https://kanshan.r2049.cn/)
 

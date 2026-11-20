@@ -1,87 +1,33 @@
+# v0.6.6
+
+Android versionCode **74** · iOS buildNumber floor **74**
+
 ## 中文
 
-**v0.6.5 · Android build 72 · 2026-11-15**
-
-### Android 与 DS-Bot
-
-- 对齐 DS-Bot 0.3.6 的 Host 接口，改善实时卡片、设置子页和输入草稿的同步。
-- 修复群聊只显示部分成员回复：保留完整的有界历史投影，成功读取的 Host 结果替换部分缓存；实时对话、历史加载和 App 重启恢复均已真机验证。
-- 修复创建 Bot 时键盘遮挡表单；短窗口支持整张表单滚动，并改善大字体、暗色和横竖屏切换。
-- 断线期间仍可编辑 Agent 草稿，发送保持禁用；重连后保留草稿，不自动发送。
-- 优化页面与 Sheet 连续过渡、会话抽屉、聊天排版与配色、代码高亮和活动组件；修复确认对话框按钮动作被取消、重复创建空对话等问题。
-- 补充俄语、乌克兰语和 DS-Bot 设置页翻译。
-
-### 文件、图片与 LAN 上传
-
-- 修复 Harness Desktop 和内嵌 IDE 的远程图片上传，保留官方 Session 附件凭证；普通文件也可通过 HTTP / IDE RPC 上传，独立 VS Code 扩展新增文件和图片选择器。
-- Android 恢复拍照入口，支持从相册和文件选择器上传视频及二进制文件。
-- 至少 1 MiB 的二进制文件在实际 LAN 路径且原生模块可用时，可使用独立的认证 Noise/TCP WebSocket 加速上传。其他连接路径、小文件、旧 Host 和缺少原生模块的客户端沿用原路径；上传开始后不换通道重放。
-- 修复可信工作区入口经过符号链接时，合法的工作区内绝对路径被拒绝的问题；继续拒绝越界路径和工作区内部符号链接。
-
-### 压缩、恢复与诊断
-
-- 新增可追踪的异步压缩：长压缩不再受普通 RPC 的 60 秒期限限制，断线后按原操作 ID 恢复查询，取消等待真实生命周期确认。旧 Host 保持原有行为。
-- 串行化跨进程凭据刷新，恢复已确认死亡的刷新占用和中断迁移残留，改善令牌过期、丢失刷新响应、存储修复后的恢复。
-- 修复 dsh web 环境中 Host 控制/Relay WebSocket 附带错误 Origin 导致自部署 Server 拒绝连接的问题；浏览器 Origin 校验保持不变。
-- 新增 Host 有界日志存储及设置中的调试日志抽屉；改进上传错误、会话目录事件同步和连接诊断。
-
-### 安装与升级
-
-- 建议同时升级 App 和 Remote Host 到 0.6.5；旧 Host 0.6.4 不能提供本轮完整的 DS-Bot 群聊历史和新上传能力。
-- Harness 支持时，从 npm 安装的 Remote 可在本机 Desktop 弹窗内升级；GitHub / 本地安装保留发布页入口。远程连接仍不能替换拥有该连接的 Remote 插件。
-- 新增独立的 `ds-harness-remote-tui` 同版本组合包，供 Harness 0.2.2-rc.1 TUI profile 安装；同一 profile 只启用一个 Remote Host entry。
-- Node.js 要求仍为 >=24.9。**升级或降级前停止所有 Harness 进程，并备份 profile 与凭据目录。** V2 凭据刷新队列的迁移、支持范围和降级步骤见[集成文档](https://github.com/liguobao/ds-harness-remote/blob/v0.6.5/docs/plugin-integration.md)。
-- npm 发布失败时，不再由 TUI 发布步骤阻断后续 GitHub Release 与 Android APK 发布；失败的 npm 包需单独重试。
-
-### 验证范围
-
-- MIX 4 + haru（Harness 0.2.2-rc.1、DS-Bot 0.3.6）：Bot 创建、模型选择、单聊、群聊完整回复与重启恢复、终端、文件预览/下载、2 MiB 上传及哈希校验通过。兼容边界见[版本说明](https://github.com/liguobao/ds-harness-remote/blob/v0.6.5/docs/compatibility.zh.md)。
-- 异步长压缩、断线恢复与取消已有跨设备 Relay 验收；LAN 原生上传已有隔离认证上下文的两次 200 MiB 哈希验收。这些测试不能等同于所有账号登录、网络路径和设备组合均已覆盖。
-- 真实 dsh-TUI 0.20.1 / Harness 0.2.2-rc.1 已在 haru 与 Android 72 间通过会话、双向消息、文件、终端和 App 重启恢复验收；见 [TUI 兼容范围](https://github.com/liguobao/ds-harness-remote/blob/v0.6.5/docs/compatibility.md)。iOS、电脑控制、真实审批和全部提醒流程尚未完整验收。离线冷启动后恢复网络，部分场景仍需手动刷新主机列表并选择 Host。
+- **iOS 与鸿蒙** · iOS 客户端代码已开源，与 Android 共享会话和消息功能，支持 iPad。原生鸿蒙客户端已合入主分支，支持 WebRTC 与加密中继、会话历史、流式消息和工作区浏览。
+- **移动端** · Android 和 iOS 可从主机详情试用主机上的原生 DSH Web，需同步升级 Remote Host，且服务器已启用该功能。会话忙碌时可排队发送或插话，也可以将已排队的消息插入当前对话。Android、iOS 和鸿蒙的设置页可查看会员状态，并改善主机列表、新建对话和 PDF 阅读体验。
+- **远程连接** · 移动端恢复直连优先，Android 和 iOS 可查看当前中继节点。改善 WebRTC 与中继切换，无 TURN 的自建服务可更快回落到中继。Desktop 可在支持的 Gateway 上并行准备直连和备用 TURN，Host 可尝试通过公网 IPv6 或 Tailscale IPv4 直连。
+- **ACP 与 Codex** · 支持接入自定义 stdio ACP 后端，扩展模式和权限选项。Antigravity 优先使用原生 ACP，保留旧适配器作为回退。改善 ACP 长会话历史、工作区文件引用和 Windows 上的后端启动，恢复 Claude ACP 一键安装。Codex 重连后可补齐流式回复，思考过程可折叠查看。
+- **Harness 与 Desktop** · 适配 DSH Desktop 0.2.2-rc.5，远程终端列表实时更新，原生工作区可按文件名或路径搜索。新增跨机器复制会话历史的 Host API，供客户端接入。对齐 DS-Bot 0.3.8 远程操作，并支持 Host 启用的官方思考过程翻译插件。
+- **稳定性** · 修复移动端会话列表冷启动崩溃、草稿恢复、截图上传、ACP 图片预览和流式回复重复显示。改善长会话历史加载并隐藏废弃空白会话，修复远程压缩取消或超时后阻塞后续请求，以及配对 Host 退出授权后无法登录的问题。
 
 ## English
 
-**v0.6.5 · Android build 72 · November 15, 2026**
+- **iOS and HarmonyOS** · The iOS client is open source, shares session and messaging features with Android, and supports iPad. The native HarmonyOS client is now on the main branch, with WebRTC, encrypted Relay, session history, streaming, and workspace browsing.
+- **Mobile** · Android and iOS can try the Host’s native DSH Web from Host details. This requires an updated Remote Host and a Server with DSH Web enabled. Queue messages during a busy session or use a new or queued message to steer the active turn. Android, iOS, and HarmonyOS show membership status in Settings and improve the Host list, new conversation flow, and PDF viewer.
+- **Remote connections** · Mobile clients prefer direct connections again. Android and iOS show the active Relay node. Switching between WebRTC and Relay is more reliable, and self-hosted Servers without TURN fall back to Relay sooner. On supported Gateways, Desktop prepares direct and standby TURN connections in parallel. Hosts can attempt direct connections over public IPv6 or Tailscale IPv4.
+- **ACP and Codex** · Register custom stdio ACP backends and use expanded mode and permission controls. Antigravity prefers native ACP with the legacy adapter as a fallback. This release improves long ACP session history, workspace file mentions, and backend startup on Windows, and restores one-click Claude ACP installation. Codex fills in missing streamed updates after reconnecting and displays reasoning in collapsible blocks.
+- **Harness and Desktop** · Support DSH Desktop 0.2.2-rc.5 with live remote terminal lists and file search by name or path in native workspaces. New Host APIs let clients integrate cross-machine session history copying. Remote operations align with DS-Bot 0.3.8, and Remote supports the official reasoning translation plugin when enabled on the Host.
+- **Reliability** · Fix a mobile session-list crash on cold start, draft recovery, screenshot uploads, ACP image previews, and duplicate streamed replies. Improve long-session history loading and hide abandoned blank sessions. Fix remote compaction requests getting stuck after cancellation or timeout, and restore Host sign-in after logging out of device pairing.
 
-### Android and DS-Bot
+## 升级说明 / Upgrade notes
 
-- Align Host forwarding with DS-Bot 0.3.6; improve live cards, settings subpages and draft synchronization.
-- Restore all group members' replies through bounded history projections and authoritative Host reads instead of partial caches. Live replies, history and restoration after an App restart passed device testing.
-- Keep Bot forms above the keyboard, scroll the entire form in short windows, and improve large-text, dark-mode and orientation handling.
-- Keep Agent drafts editable offline while blocking sending; retain drafts after reconnect without automatically sending them.
-- Refine screen/sheet transitions, the conversation drawer, chat typography, color palettes, syntax highlighting and activity components. Fix confirmation-button cancellation and duplicate blank conversations.
-- Add Russian, Ukrainian and DS-Bot settings translations.
+- 建议 App 与 Remote Host 同步升级到 0.6.6。Node.js 要求仍为 >=24.9。升级或降级前先停止所有 Harness 进程并备份 profile 与凭据。 [集成指南](https://github.com/liguobao/ds-harness-remote/blob/main/docs/plugin-integration.md)
+- Upgrade the app and Remote Host together. Stop all Harness processes before upgrading or downgrading. Node.js >=24.9 remains required.
+- iOS 通过 Xcode Cloud 签名与分发；未签名的 HarmonyOS HAP 需签名后才能安装。鸿蒙保留独立版本号与功能边界，见[鸿蒙说明](https://github.com/liguobao/ds-harness-remote/blob/main/docs/harmony-client.md)。
 
-### Uploads and workspace files
+## 贡献者 / Contributors
 
-- Fix remote image uploads from Harness Desktop and embedded IDE clients while retaining official Session attachment receipts. Support ordinary files over HTTP / IDE RPC and add file/image selection to the standalone VS Code extension.
-- Restore Android photo capture and support video/binary uploads from gallery and file pickers.
-- Accelerate binary files of at least 1 MiB over an authenticated Noise/TCP WebSocket when the selected path is LAN and native support is available. Other paths, small files, older Hosts and clients without the native module retain their existing transport. Started uploads are never replayed on another channel.
-- Accept in-workspace absolute file paths through the Host's trusted workspace alias while continuing to reject traversal and internal symlinks.
+感谢 / Thanks to [@vccddd](https://github.com/vccddd), [@Mangoman2008](https://github.com/Mangoman2008), [@PYH0809](https://github.com/PYH0809), [@dreamfarer-space](https://github.com/dreamfarer-space), [@AIchanKimi](https://github.com/AIchanKimi), [@luojiyin1987](https://github.com/luojiyin1987), [@gcnyin](https://github.com/gcnyin), [@greatcorrectandglory](https://github.com/greatcorrectandglory), [@liguobao](https://github.com/liguobao)，以及所有提交问题、协助复现和参与验证的朋友。
 
-### Compaction, recovery and diagnostics
-
-- Track asynchronous compaction independently of ordinary RPC deadlines; resume observation of the same operation after reconnect and confirm cancellation through the actual lifecycle. Older Hosts retain their existing behavior.
-- Serialize credential refresh across processes and improve recovery from dead refresh owners, interrupted migration, expired access tokens and lost refresh responses.
-- Fix dsh web Host control/Relay sockets sending an incorrect Origin to self-hosted Servers without weakening browser Origin checks.
-- Add bounded Host log storage and a settings debug-log drawer; improve upload errors, event-driven session catalogues and diagnostics.
-
-### Upgrading and validation
-
-- Upgrade both App and Remote Host to 0.6.5 for the new upload features and complete DS-Bot group history.
-- Supported Harness installations can update an npm-installed Remote from its local Desktop dialog. GitHub/local installs retain the release link; a remote peer cannot replace its owning Remote plugin.
-- Add the matching standalone `ds-harness-remote-tui` bundle for Harness 0.2.2-rc.1 TUI profiles. Enable only one Remote Host entry per profile.
-- Node.js >=24.9 remains required. **Stop every Harness process and back up profile/credential storage before upgrading or downgrading.** See the [integration guide](https://github.com/liguobao/ds-harness-remote/blob/v0.6.5/docs/plugin-integration.md).
-- TUI npm publishing failures no longer block subsequent GitHub Release and Android APK publication; retry failed npm publication separately.
-- MIX 4 / haru acceptance covered Bot creation, model selection, chat, complete group history after restart, terminal, file preview/download and a hash-verified 2 MiB upload. Additional checks covered cross-device Relay compaction and isolated, hash-verified 200 MiB LAN uploads.
-- Real dsh-TUI 0.20.1 / Harness 0.2.2-rc.1 on haru passed Android 72 session, bidirectional messaging, file, terminal and App-restart recovery checks; see [TUI compatibility](https://github.com/liguobao/ds-harness-remote/blob/v0.6.5/docs/compatibility.md). Complete iOS, computer-control, approval and scheduling coverage remains pending. Recovery from an offline cold start may still require refreshing the Host list and selecting a Host.
-
-### 贡献者 / Contributors
-
-感谢以下贡献者为 v0.6.5 提交的代码、翻译、文档与测试改进：
-
-[@dreamfarer-space](https://github.com/dreamfarer-space), [@luojiyin1987](https://github.com/luojiyin1987), [@zzalancelot](https://github.com/zzalancelot), [@greatyingzi](https://github.com/greatyingzi), [@gcnyin](https://github.com/gcnyin), [@vccddd](https://github.com/vccddd), [@smmisha](https://github.com/smmisha), [@xingranya](https://github.com/xingranya), [@Pcject](https://github.com/Pcject)
-
-Thank you to everyone above for the code, translations, documentation and tests included in v0.6.5, and to everyone who reported issues and helped validate this release.
-
-感谢所有提交问题、协助复现和参与真机验证的朋友。
+特别感谢 @vccddd 推进 iOS 与共享应用代码，@Mangoman2008 实现鸿蒙客户端，@PYH0809 改进传输升级与历史投影；也感谢其他贡献者对 ACP、Codex、上传与 Android 体验的持续修复。
